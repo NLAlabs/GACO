@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GACO — Gestió Agrària Comptable Òptima</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+  <script type="module" src="js/app.js" defer></script>
+</head>
+<body>
+  <div id="login-screen" class="screen">
+    <!-- Reaprofita el mateix formulari/patró de login que SAO (Supabase Auth) -->
+    <form id="login-form">
+      <h1>GACO</h1>
+      <input type="email" id="login-email" placeholder="correu@exemple.com" required />
+      <input type="password" id="login-password" placeholder="Contrasenya" required />
+      <button type="submit">Entrar</button>
+      <p id="login-error" class="error" hidden></p>
+    </form>
+  </div>
+
+  <div id="app-shell" class="screen" hidden>
+    <nav id="main-nav">
+      <a href="#/inici" data-route="inici">Inici</a>
+      <a href="#/moviments" data-route="moviments">Moviments</a>
+      <a href="#/documents" data-route="documents">Documents</a>
+      <a href="#/financament" data-route="financament">Finançament</a>
+      <a href="#/informes" data-route="informes">Informes</a>
+      <!-- Configuració i gestió: es mostra només si gaco_rol_actual = 'admin' (veure js/auth.js) -->
+      <a href="#/configuracio" data-route="configuracio" id="nav-configuracio" hidden>Configuració i gestió</a>
+      <span id="nav-user"></span>
+      <button id="logout-btn">Sortir</button>
+    </nav>
+
+    <!-- Submenú contextual de la secció activa (p. ex. dins Moviments: N43 / Conciliació / Comptes) -->
+    <nav id="sub-nav"></nav>
+
+    <main id="app-content">
+      <!-- Cada mòdul renderitza aquí el seu contingut (veure js/router.js) -->
+    </main>
+  </div>
+</body>
+</html>
