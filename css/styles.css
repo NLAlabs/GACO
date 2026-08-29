@@ -1,1 +1,131 @@
+/* GACO — estils base
+   Principis del document: llenguatge pla, pantalles curtes, poques accions
+   per tasca, sense menús ni passos innecessaris. Mateix patró visual que SAO. */
 
+:root {
+  --gaco-bg: #f7f6f3;
+  --gaco-surface: #ffffff;
+  --gaco-border: #e0ddd5;
+  --gaco-text: #2c2c2a;
+  --gaco-text-secondary: #6b6a66;
+  --gaco-accent: #185fa5;
+  --gaco-success: #0f6e56;
+  --gaco-danger: #a32d2d;
+  --gaco-radius: 8px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--gaco-bg);
+  color: var(--gaco-text);
+}
+
+.screen[hidden] { display: none; }
+
+/* ---------- Login ---------- */
+#login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#login-form {
+  background: var(--gaco-surface);
+  border: 1px solid var(--gaco-border);
+  border-radius: var(--gaco-radius);
+  padding: 2rem;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#login-form input, #login-form button {
+  padding: 10px 12px;
+  border-radius: var(--gaco-radius);
+  border: 1px solid var(--gaco-border);
+  font-size: 15px;
+}
+#login-form button {
+  background: var(--gaco-accent);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+.error { color: var(--gaco-danger); font-size: 13px; }
+
+/* ---------- Navegació principal ---------- */
+#main-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  height: 52px;
+  background: var(--gaco-surface);
+  border-bottom: 1px solid var(--gaco-border);
+}
+#main-nav a {
+  padding: 8px 12px;
+  border-radius: var(--gaco-radius);
+  text-decoration: none;
+  color: var(--gaco-text-secondary);
+  font-size: 14px;
+}
+#main-nav a.active {
+  background: var(--gaco-bg);
+  color: var(--gaco-text);
+  font-weight: 500;
+}
+#nav-user { margin-left: auto; font-size: 13px; color: var(--gaco-text-secondary); }
+#logout-btn {
+  border: 1px solid var(--gaco-border);
+  background: transparent;
+  border-radius: var(--gaco-radius);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+/* ---------- Submenú contextual ---------- */
+#sub-nav {
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--gaco-border);
+}
+#sub-nav a {
+  padding: 6px 10px;
+  border-radius: var(--gaco-radius);
+  text-decoration: none;
+  color: var(--gaco-text-secondary);
+  font-size: 13px;
+}
+#sub-nav a.active { background: var(--gaco-bg); color: var(--gaco-text); }
+#sub-nav:empty { display: none; }
+
+/* ---------- Contingut ---------- */
+#app-content {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+.card {
+  background: var(--gaco-surface);
+  border: 1px solid var(--gaco-border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+/* Widget de calculadora integrada (secció "Principis de disseny" del document) */
+#calculadora-widget {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  background: var(--gaco-surface);
+  border: 1px solid var(--gaco-border);
+  border-radius: var(--gaco-radius);
+  padding: 8px;
+}
