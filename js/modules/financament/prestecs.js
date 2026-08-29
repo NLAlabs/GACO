@@ -1,5 +1,5 @@
 /**
- * polisses — placeholder d'esquelet.
+ * prestecs — placeholder d'esquelet.
  * Esquema BD ja definit a gaco_fase1_completa.sql (gaco_prestecs,
  * gaco_quotes_prestec, gaco_liquidacions_polissa, gaco_confirming,
  * gaco_socis, gaco_socis_compte_corrent). Pantalla real pendent
@@ -7,5 +7,5 @@
  */
 export async function render() {
   const contenidor = document.getElementById('app-content');
-  contenidor.innerHTML = '<div class="card"><p>polisses — pendent d\'implementar.</p></div>';
+  contenidor.innerHTML = '<div class="card"><p>prestecs — pendent d\'implementar.</p></div>';
 }
