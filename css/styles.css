@@ -73,6 +73,26 @@ body {
 .error { color: var(--gaco-danger); font-size: 13px; }
 
 /* ---------- Navegació principal ---------- */
+#app-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--gaco-accent);
+  color: #fff;
+}
+#nav-logo { height: 32px; border-radius: 4px; }
+#app-title { font-weight: 700; font-size: 18px; font-family: Georgia, serif; }
+#nav-user { margin-left: auto; font-size: 13px; opacity: 0.9; }
+#app-header #logout-btn {
+  border: 1px solid rgba(255,255,255,0.6);
+  background: transparent;
+  color: #fff;
+  border-radius: var(--gaco-radius);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
 #main-nav {
   display: flex;
   align-items: center;
@@ -82,18 +102,6 @@ body {
   background: var(--gaco-surface);
   border-bottom: 2px solid var(--gaco-accent);
 }
-@media (max-width: 640px) {
-  #main-nav {
-    flex-wrap: wrap;
-    height: auto;
-    padding: 8px 12px;
-    row-gap: 6px;
-  }
-  #nav-user {
-    margin-left: 0;
-  }
-}
-#nav-logo { height: 28px; margin-right: 12px; }
 #main-nav a {
   padding: 8px 12px;
   border-radius: var(--gaco-radius);
@@ -106,15 +114,22 @@ body {
   color: var(--gaco-accent);
   font-weight: 500;
 }
-#nav-user { margin-left: auto; font-size: 13px; color: var(--gaco-text-secondary); }
-#logout-btn {
-  border: 1px solid var(--gaco-border);
-  background: transparent;
-  border-radius: var(--gaco-radius);
-  padding: 6px 12px;
-  cursor: pointer;
-}
 
+@media (max-width: 640px) {
+  #app-header { flex-wrap: wrap; }
+  #main-nav {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    height: auto;
+    padding: 8px 12px;
+    gap: 6px;
+  }
+  #main-nav a {
+    text-align: center;
+    padding: 10px 4px;
+    font-size: 13px;
+  }
+}
 /* ---------- Submenú contextual ---------- */
 #sub-nav {
   display: flex;
