@@ -22,9 +22,10 @@ export async function render() {
 
   contenidor.innerHTML = `
     <div class="card">
-      <p style="font-weight:500; margin-bottom:12px;">Donar d'alta un usuari de SAO</p>
+      <p style="font-weight:500; margin-bottom:12px;">Assignar un rol a un usuari</p>
       <p style="font-size:13px; color:var(--gaco-text-secondary); margin-bottom:12px;">
-        Ha de ser un correu que ja existeixi a SAO — GACO no crea usuaris nous, només rols sobre els existents.
+        Ha de ser un correu que ja existeixi com a usuari en aquest projecte de Supabase (Authentication → Users) — GACO no crea usuaris nous, només els assigna un rol i un accés.
+      </p>
       </p>
       <form id="alta-usuari-form" style="display:flex; gap:8px; flex-wrap:wrap;">
         <input type="email" id="nou-usuari-email" placeholder="correu@exemple.com" required style="flex:1; min-width:200px;" />
