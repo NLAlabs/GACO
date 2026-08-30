@@ -37,7 +37,7 @@ body {
   color: var(--gaco-text);
 }
 
-.screen[hidden] { display: none; }
+.screen[hidden] { display: none !important; }
 
 /* ---------- Login ---------- */
 #login-screen {
