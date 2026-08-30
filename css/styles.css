@@ -82,6 +82,17 @@ body {
   background: var(--gaco-surface);
   border-bottom: 2px solid var(--gaco-accent);
 }
+@media (max-width: 640px) {
+  #main-nav {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 8px 12px;
+    row-gap: 6px;
+  }
+  #nav-user {
+    margin-left: 0;
+  }
+}
 #nav-logo { height: 28px; margin-right: 12px; }
 #main-nav a {
   padding: 8px 12px;
