@@ -13,10 +13,7 @@ export async function render() {
   const contenidor = document.getElementById('app-content');
   contenidor.innerHTML = '<p>Carregant usuaris...</p>';
 
-  const { data: usuaris, error } = await supabase
-    .from('gaco_usuaris_rol')
-    .select('id, rol, actiu, created_at')
-    .order('rol');
+    const { data: usuaris, error } = await supabase.rpc('gaco_llista_usuaris');
 
   if (error) {
     contenidor.innerHTML = `<p class="error">Error carregant usuaris: ${error.message}</p>`;
@@ -48,14 +45,13 @@ export async function render() {
         .map(
           (u) => `
         <div style="display:flex; justify-content:space-between; padding:8px 0; border-top:0.5px solid var(--gaco-border);">
-          <span>${u.rol}</span>
+          <span>${u.email} · ${u.rol}</span>
           <span style="color:${u.actiu ? 'var(--gaco-success)' : 'var(--gaco-text-secondary)'};">${u.actiu ? 'actiu' : 'inactiu'}</span>
         </div>
       `
         )
         .join('')}
-      <!-- TODO: mostrar el correu real (requereix una vista/funció addicional
-           que faci JOIN amb auth.users, mateix motiu que a l'alta) -->
+      
     </div>
   `;
 
