@@ -3,18 +3,32 @@
    per tasca, sense menús ni passos innecessaris. Mateix patró visual que SAO. */
 
 :root {
-  --gaco-bg: #f7f6f3;
+  /* Paleta granat/blanc — diferenciació visual respecte SAO (verd/blanc).
+     --gaco-accent extret directament del logo (GACO_Logo1.png: #88001B). */
+  --gaco-bg: #faf6f7;
   --gaco-surface: #ffffff;
-  --gaco-border: #e0ddd5;
+  --gaco-border: #e8d9dc;
   --gaco-text: #2c2c2a;
   --gaco-text-secondary: #6b6a66;
-  --gaco-accent: #185fa5;
+  --gaco-accent: #88001b;
+  --gaco-accent-hover: #6b0015;
+  --gaco-accent-soft: #f3dfe3;   /* fons suau per a elements actius (nav, etc.) */
   --gaco-success: #0f6e56;
-  --gaco-danger: #a32d2d;
+  --gaco-danger: #c1440e;        /* diferenciat del granat per no confondre's amb l'accent */
   --gaco-radius: 8px;
 }
 
 * { box-sizing: border-box; }
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
 
 body {
   margin: 0;
@@ -54,6 +68,8 @@ body {
   border: none;
   cursor: pointer;
 }
+#login-form button:hover { background: var(--gaco-accent-hover); }
+#login-logo { display: block; margin: 0 auto 12px; max-width: 160px; }
 .error { color: var(--gaco-danger); font-size: 13px; }
 
 /* ---------- Navegació principal ---------- */
@@ -64,8 +80,9 @@ body {
   padding: 0 16px;
   height: 52px;
   background: var(--gaco-surface);
-  border-bottom: 1px solid var(--gaco-border);
+  border-bottom: 2px solid var(--gaco-accent);
 }
+#nav-logo { height: 28px; margin-right: 12px; }
 #main-nav a {
   padding: 8px 12px;
   border-radius: var(--gaco-radius);
@@ -74,8 +91,8 @@ body {
   font-size: 14px;
 }
 #main-nav a.active {
-  background: var(--gaco-bg);
-  color: var(--gaco-text);
+  background: var(--gaco-accent-soft);
+  color: var(--gaco-accent);
   font-weight: 500;
 }
 #nav-user { margin-left: auto; font-size: 13px; color: var(--gaco-text-secondary); }
@@ -101,7 +118,7 @@ body {
   color: var(--gaco-text-secondary);
   font-size: 13px;
 }
-#sub-nav a.active { background: var(--gaco-bg); color: var(--gaco-text); }
+#sub-nav a.active { background: var(--gaco-accent-soft); color: var(--gaco-accent); font-weight: 500; }
 #sub-nav:empty { display: none; }
 
 /* ---------- Contingut ---------- */
