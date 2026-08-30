@@ -8,7 +8,7 @@
  * repositori és públic — usar variables d'entorn / build step.
  */
 
-const SUPABASE_URL = 'https://xnxoufpizdtfklfjwqet.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhueG91ZnBpemR0ZmtsZmp3cWV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzEwMDk4NDAsImV4cCI6MjA4NjU4NTg0MH0.izqQdOxUWUzXNhasXwHnm7IO2qVHHHzx9e-1FIGh9ic';
+const SUPABASE_URL = 'https://arsjypznhmzyfbbxvrdd.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFyc2p5cHpuaG16eWZiYnh2cmRkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgwMjA2MzgsImV4cCI6MjEwMzU5NjYzOH0.19k9tc9gcFG6ZH8caZAMyBt0pYqqdLZECA0OK4t1PMc';
 
 export const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
