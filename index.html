@@ -27,18 +27,20 @@
   </div>
 
   <div id="app-shell" class="screen" hidden>
-    <nav id="main-nav">
-      <img id="nav-logo" src="assets/logo.png" alt="GACO" />
-      <a href="#/inici" data-route="inici">Inici</a>
-      <a href="#/moviments" data-route="moviments">Moviments</a>
-      <a href="#/documents" data-route="documents">Documents</a>
-      <a href="#/financament" data-route="financament">Finançament</a>
-      <a href="#/informes" data-route="informes">Informes</a>
-      <!-- Configuració i gestió: es mostra només si gaco_rol_actual = 'admin' (veure js/auth.js) -->
-      <a href="#/configuracio" data-route="configuracio" id="nav-configuracio" hidden>Configuració i gestió</a>
-      <span id="nav-user"></span>
-      <button id="logout-btn">Sortir</button>
-    </nav>
+   <header id="app-header">
+  <img id="nav-logo" src="assets/logo.png" alt="GACO" />
+  <span id="app-title">GACO</span>
+  <span id="nav-user"></span>
+  <button id="logout-btn">Sortir</button>
+</header>
+<nav id="main-nav">
+  <a href="#/inici" data-route="inici">Inici</a>
+  <a href="#/moviments" data-route="moviments">Moviments</a>
+  <a href="#/documents" data-route="documents">Documents</a>
+  <a href="#/financament" data-route="financament">Finançament</a>
+  <a href="#/informes" data-route="informes">Informes</a>
+  <a href="#/configuracio" data-route="configuracio" id="nav-configuracio" hidden>Configuració i gestió</a>
+</nav>
 
     <!-- Submenú contextual de la secció activa (p. ex. dins Moviments: N43 / Conciliació / Comptes) -->
     <nav id="sub-nav"></nav>
