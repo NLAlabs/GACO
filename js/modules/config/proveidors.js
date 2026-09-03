@@ -2,27 +2,42 @@ import { supabase } from '../../lib/supabaseClient.js';
 
 /**
  * Configuració i gestió → Proveïdors.
- * Alta ràpida amb els camps essencials (nom, CIF, tipus, subjecte IRPF);
- * la resta de dades (adreça, contacte, IBAN...) queden rere un
- * "Més camps" per no allargar el formulari del dia a dia — principi de
- * disseny àgil i lleuger del document original.
- *
- * "Eliminar" = actiu=false (mateix criteri que comptes bancaris — altres
- * taules com gaco_factures_rebudes referencien proveidor_id).
+ * Alta ràpida (nom, CIF, tipus, IRPF) + "Més camps" opcional.
+ * Cerca per nom/CIF (client-side, pensat per ~100-150 proveïdors — si
+ * algun dia creix molt més, caldria passar el filtre a la consulta).
+ * Editar obre un formulari inline amb tots els camps.
+ * "Eliminar" = actiu=false (mateix criteri que Comptes bancaris).
  */
 
 const TIPUS_PROVEIDOR = [
-  'Adobs i fitosanitaris', 'Assegurances', 'Bancs/Financeres', 'Carburants', 'Ferreteria', 'Gestoria', 'Material_Agricola', 'Notaria/Registre',
-  'Reparacions', 'Subministraments', 'Altres',
+  'fitosanitaris', 'gasoil', 'assegurances', 'gestoria', 'notaria',
+  'registre', 'benzinera', 'ferreteria', 'material_agricola', 'altres',
 ];
+
+const CAMPS_EDITABLES = [
+  ['nom', 'Nom / raó social'],
+  ['nom_comercial', 'Nom comercial'],
+  ['cif', 'CIF/NIF'],
+  ['adreca', 'Adreça'],
+  ['municipi', 'Municipi'],
+  ['codi_postal', 'Codi postal'],
+  ['provincia', 'Província'],
+  ['telefon1', 'Telèfon'],
+  ['email1', 'Correu'],
+  ['iban1', 'IBAN'],
+  ['compte_comptable', 'Compte comptable (PGC)'],
+  ['codi_sao', 'Codi SAO'],
+];
+
+let tots = []; // cache local per a la cerca sense tornar a consultar la BD
 
 export async function render() {
   const contenidor = document.getElementById('app-content');
   contenidor.innerHTML = '<p>Carregant proveïdors...</p>';
 
-  const { data: proveidors, error } = await supabase
+  const { data, error } = await supabase
     .from('gaco_proveidors')
-    .select('id, nom, cif, tipus, subjecte_irpf, actiu, telefon1, email1, iban1')
+    .select('*')
     .order('nom');
 
   if (error) {
@@ -30,6 +45,7 @@ export async function render() {
     return;
   }
 
+  tots = data;
   contenidor.innerHTML = `
     <div class="card">
       <p style="font-weight:500; margin-bottom:12px;">Nou proveïdor</p>
@@ -48,7 +64,7 @@ export async function render() {
         </label>
 
         <button type="button" id="toggle-mes-camps" style="margin-bottom:8px;">Més camps ▾</button>
-        <div id="mes-camps" hidden style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <div id="mes-camps" style="display:none; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
           <input type="text" id="prov-adreca" placeholder="Adreça" style="min-width:180px;" />
           <input type="text" id="prov-municipi" placeholder="Municipi" style="min-width:140px;" />
           <input type="text" id="prov-codipostal" placeholder="Codi postal" style="width:100px;" />
@@ -64,30 +80,19 @@ export async function render() {
     </div>
 
     <div class="card">
-      <p style="font-weight:500; margin-bottom:12px;">Proveïdors (${proveidors.length})</p>
-      ${proveidors
-        .map(
-          (p) => `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-top:0.5px solid var(--gaco-border);">
-          <div style="${p.actiu ? '' : 'color:var(--gaco-text-secondary); text-decoration:line-through;'}">
-            <p style="margin:0;">${p.nom} ${p.tipus ? `· ${p.tipus}` : ''} ${p.subjecte_irpf ? '· IRPF' : ''}</p>
-            <p style="margin:2px 0 0; font-size:12px; color:var(--gaco-text-secondary);">
-              ${[p.cif, p.telefon1, p.email1].filter(Boolean).join(' · ') || '—'}
-            </p>
-          </div>
-          <div style="display:flex; gap:6px;">
-            <button data-toggle-proveidor="${p.id}" data-actiu="${p.actiu}">${p.actiu ? 'Desactivar' : 'Reactivar'}</button>
-          </div>
-        </div>
-      `
-        )
-        .join('')}
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <p style="font-weight:500; margin:0;">Proveïdors (<span id="comptador-proveidors">${tots.length}</span>)</p>
+        <input type="search" id="cerca-proveidor" placeholder="Cerca per nom o CIF..." style="min-width:220px;" />
+      </div>
+      <div id="llista-proveidors"></div>
     </div>
   `;
 
+  // "Més camps": ara es controla directament per style.display, sense
+  // dependre de l'atribut hidden (que un style inline sempre ignorava)
   document.getElementById('toggle-mes-camps').addEventListener('click', () => {
     const bloc = document.getElementById('mes-camps');
-    bloc.hidden = !bloc.hidden;
+    bloc.style.display = bloc.style.display === 'none' ? 'flex' : 'none';
   });
 
   document.getElementById('form-proveidor').addEventListener('submit', async (e) => {
@@ -114,7 +119,48 @@ export async function render() {
     render();
   });
 
-  document.querySelectorAll('[data-toggle-proveidor]').forEach((btn) => {
+  document.getElementById('cerca-proveidor').addEventListener('input', (e) => {
+    pintarLlista(filtrar(e.target.value));
+  });
+
+  pintarLlista(tots);
+}
+
+function filtrar(text) {
+  const t = text.trim().toLowerCase();
+  if (!t) return tots;
+  return tots.filter(
+    (p) => p.nom?.toLowerCase().includes(t) || p.cif?.toLowerCase().includes(t)
+  );
+}
+
+function pintarLlista(llista) {
+  document.getElementById('comptador-proveidors').textContent = llista.length;
+  const contenidor = document.getElementById('llista-proveidors');
+
+  contenidor.innerHTML = llista
+    .map(
+      (p) => `
+    <div style="border-top:0.5px solid var(--gaco-border); padding:10px 0;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="${p.actiu ? '' : 'color:var(--gaco-text-secondary); text-decoration:line-through;'}">
+          <p style="margin:0;">${p.nom} ${p.tipus ? `· ${p.tipus}` : ''} ${p.subjecte_irpf ? '· IRPF' : ''}</p>
+          <p style="margin:2px 0 0; font-size:12px; color:var(--gaco-text-secondary);">
+            ${[p.cif, p.telefon1, p.email1].filter(Boolean).join(' · ') || '—'}
+          </p>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button data-veure="${p.id}">Veure/Editar</button>
+          <button data-toggle-proveidor="${p.id}" data-actiu="${p.actiu}">${p.actiu ? 'Desactivar' : 'Reactivar'}</button>
+        </div>
+      </div>
+      <div id="edit-proveidor-${p.id}" style="display:none; margin-top:10px; padding-top:10px; border-top:0.5px dashed var(--gaco-border);"></div>
+    </div>
+  `
+    )
+    .join('');
+
+  contenidor.querySelectorAll('[data-toggle-proveidor]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.toggleProveidor;
       const actiuActual = btn.dataset.actiu === 'true';
@@ -122,5 +168,51 @@ export async function render() {
       if (error) return alert(`Error: ${error.message}`);
       render();
     });
+  });
+
+  contenidor.querySelectorAll('[data-veure]').forEach((btn) => {
+    btn.addEventListener('click', () => obrirEdicio(btn.dataset.veure));
+  });
+}
+
+function obrirEdicio(id) {
+  const proveidor = tots.find((p) => p.id === id);
+  const bloc = document.getElementById(`edit-proveidor-${id}`);
+  const esVisible = bloc.style.display !== 'none';
+
+  // Tanca qualsevol altra fitxa oberta
+  document.querySelectorAll('[id^="edit-proveidor-"]').forEach((el) => (el.style.display = 'none'));
+  if (esVisible) return; // toggle: si ja era visible, es queda tancat
+
+  bloc.style.display = 'block';
+  bloc.innerHTML = `
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+      ${CAMPS_EDITABLES.map(
+        ([camp, label]) => `
+        <input type="text" id="ed-${camp}-${id}" placeholder="${label}" value="${proveidor[camp] ?? ''}" style="min-width:160px;" />
+      `
+      ).join('')}
+      <select id="ed-tipus-${id}" style="min-width:150px;">
+        <option value="">Tipus...</option>
+        ${TIPUS_PROVEIDOR.map(
+          (t) => `<option value="${t}" ${proveidor.tipus === t ? 'selected' : ''}>${t}</option>`
+        ).join('')}
+      </select>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px;">
+        <input type="checkbox" id="ed-irpf-${id}" ${proveidor.subjecte_irpf ? 'checked' : ''} />
+        Subjecte IRPF
+      </label>
+    </div>
+    <button data-desar="${id}">Desar canvis</button>
+  `;
+
+  bloc.querySelector(`[data-desar="${id}"]`).addEventListener('click', async () => {
+    const actualitzat = { tipus: document.getElementById(`ed-tipus-${id}`).value || null, subjecte_irpf: document.getElementById(`ed-irpf-${id}`).checked };
+    CAMPS_EDITABLES.forEach(([camp]) => {
+      actualitzat[camp] = document.getElementById(`ed-${camp}-${id}`).value.trim() || null;
+    });
+    const { error } = await supabase.from('gaco_proveidors').update(actualitzat).eq('id', id);
+    if (error) return alert(`Error desant: ${error.message}`);
+    render();
   });
 }
