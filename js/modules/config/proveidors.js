@@ -10,8 +10,8 @@ import { supabase } from '../../lib/supabaseClient.js';
  */
 
 const TIPUS_PROVEIDOR = [
-  'fitosanitaris', 'gasoil', 'assegurances', 'gestoria', 'notaria',
-  'registre', 'benzinera', 'ferreteria', 'material_agricola', 'altres',
+     'Adobs i fitosanitaris', 'Assegurances', 'Bancs/Financeres', 'Carburants', 'Ferreteria', 'Gestoria', 'Material_Agricola', 'Notaria/Registre',
+  'Reparacions', 'Subministraments', 'Altres',
 ];
 
 const CAMPS_EDITABLES = [
@@ -73,6 +73,7 @@ export async function render() {
           <input type="text" id="prov-iban" placeholder="IBAN" style="min-width:200px;" />
           <input type="text" id="prov-compte-comptable" placeholder="Compte comptable (PGC, opcional)" style="min-width:200px;" />
           <input type="text" id="prov-codi-sao" placeholder="Codi SAO (opcional)" style="min-width:150px;" />
+          <textarea id="prov-observacions" placeholder="Observacions (p.ex. &quot;deixem de treballar-hi&quot;, &quot;el comercial ha de portar mostres&quot;...)" style="width:100%; min-height:50px;"></textarea>
         </div>
 
         <button type="submit">Afegir proveïdor</button>
@@ -110,6 +111,7 @@ export async function render() {
       iban1: document.getElementById('prov-iban').value.trim() || null,
       compte_comptable: document.getElementById('prov-compte-comptable').value.trim() || null,
       codi_sao: document.getElementById('prov-codi-sao').value.trim() || null,
+      observacions: document.getElementById('prov-observacions').value.trim() || null,
       actiu: true,
     };
     if (!nou.nom) return;
@@ -148,6 +150,7 @@ function pintarLlista(llista) {
           <p style="margin:2px 0 0; font-size:12px; color:var(--gaco-text-secondary);">
             ${[p.cif, p.telefon1, p.email1].filter(Boolean).join(' · ') || '—'}
           </p>
+          ${p.observacions ? `<p style="margin:4px 0 0; font-size:12px; color:var(--gaco-accent);">⚠ ${p.observacions}</p>` : ''}
         </div>
         <div style="display:flex; gap:6px;">
           <button data-veure="${p.id}">Veure/Editar</button>
@@ -203,11 +206,16 @@ function obrirEdicio(id) {
         Subjecte IRPF
       </label>
     </div>
+    <textarea id="ed-observacions-${id}" placeholder="Observacions" style="width:100%; min-height:50px; margin-bottom:8px;">${proveidor.observacions ?? ''}</textarea>
     <button data-desar="${id}">Desar canvis</button>
   `;
 
   bloc.querySelector(`[data-desar="${id}"]`).addEventListener('click', async () => {
-    const actualitzat = { tipus: document.getElementById(`ed-tipus-${id}`).value || null, subjecte_irpf: document.getElementById(`ed-irpf-${id}`).checked };
+    const actualitzat = {
+      tipus: document.getElementById(`ed-tipus-${id}`).value || null,
+      subjecte_irpf: document.getElementById(`ed-irpf-${id}`).checked,
+      observacions: document.getElementById(`ed-observacions-${id}`).value.trim() || null,
+    };
     CAMPS_EDITABLES.forEach(([camp]) => {
       actualitzat[camp] = document.getElementById(`ed-${camp}-${id}`).value.trim() || null;
     });
