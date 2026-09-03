@@ -12,8 +12,8 @@ import { supabase } from '../../lib/supabaseClient.js';
  */
 
 const TIPUS_PROVEIDOR = [
-  'fitosanitaris', 'gasoil', 'assegurances', 'gestoria', 'notaria',
-  'registre', 'benzinera', 'ferreteria', 'material_agricola', 'altres',
+  'Adobs i fitosanitaris', 'Assegurances', 'Bancs/Financeres', 'Carburants', 'Ferreteria', 'Gestoria', 'Material_Agricola', 'Notaria/Registre',
+  'Reparacions', 'Subministraments', 'Altres',
 ];
 
 export async function render() {
