@@ -1,28 +1,38 @@
 import { supabase } from '../../lib/supabaseClient.js';
+import { openModal, closeModal } from '../../lib/modal.js';
 
 /**
  * Documents → Factures rebudes.
- * Capçalera (gaco_factures_rebudes) amb filtres + alta ràpida + Veure/Editar.
- * Línies (gaco_detall_factures_rebudes) dins la mateixa vista de Veure/Editar,
- * amb recàlcul en viu de base_imposable/iva/suplits/total de la capçalera.
+ * Vista principal: només llista (una fila per factura, camps etiquetats) +
+ * filtres plegats + botó "+ Nova factura". Tota l'alta/edició es fa en un
+ * modal, seguint l'ordre de lectura natural d'una factura:
+ *   A — Dades de la factura
+ *   B — Línies + totals calculats
+ *   C — Venciment i forma de pagament (al final, com a Access)
  *
  * Pendent per a la propera iteració: adjunts (gaco_adjunts_factures_rebudes)
- * i pagaments (gaco_pagaments_factures_rebudes).
+ * i pagaments (gaco_pagaments_factures_rebudes) — probablement un bloc D.
  *
  * Exercici: es filtra SEMPRE per l'any en curs per defecte (lliçó de SAO —
  * mai llista sense filtrar per exercici), amb opció explícita "Tots".
  *
- * confirming_id: es deixa sempre null en aquesta pantalla. El confirming
- * real del negoci és "nosaltres com a proveïdor de serveis cobrant d'un
- * client" (cas d'ús de gaco_factures_emeses, pendent de fer), no de
- * pagar als nostres propis proveïdors — encara que la columna existeixi
- * físicament aquí.
+ * confirming_id: es deixa sempre null. El cas d'ús real del confirming és
+ * "nosaltres com a proveïdor de serveis cobrant d'un client" (factures
+ * emeses, pendent de fer), no pagar als nostres propis proveïdors.
  */
 
 const TIPUS_FACTURA = ['factura', 'despesa'];
 const ESTATS = ['pendent', 'pagada_parcial', 'pagada', 'pendent_liquidar_soci', 'liquidada_soci'];
 const FORMES_PAGAMENT = ['compte_bancari', 'soci', 'confirming', 'compensacio'];
 const ACTIVITATS = ['fruita_cereal', 'serveis', 'comuna'];
+
+const ETIQUETES_ESTAT = {
+  pendent: 'Pendent',
+  pagada_parcial: 'Pagada parcial',
+  pagada: 'Pagada',
+  pendent_liquidar_soci: 'Pendent liquidar soci',
+  liquidada_soci: 'Liquidada soci',
+};
 
 const ANY_ACTUAL = new Date().getFullYear();
 
@@ -33,10 +43,10 @@ let comptesCache = [];
 let socisCache = [];
 let immobilitzatCache = [];
 
-// Cache de l'últim resultat llistat (per a l'exportació PDF i per repintar sense refer la consulta)
+// Cache de l'últim resultat llistat (per a l'exportació PDF)
 let resultatActual = [];
 
-// Estat del filtre — es manté a nivell de mòdul perquè no es perdi en tornar de Veure/Editar
+// Estat del filtre — es manté a nivell de mòdul perquè no es perdi en tancar el modal
 const filtre = {
   exercici: ANY_ACTUAL, // null = "Tots els exercicis"
   proveidorId: null,
@@ -59,64 +69,21 @@ export async function render() {
   await carregarDadesSuport();
 
   contenidor.innerHTML = `
-    <div class="card">
-      <p style="font-weight:500; margin-bottom:12px;">Nova factura rebuda</p>
-      <form id="form-factura-rebuda">
-        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-          <select id="fr-tipus-factura" style="flex:1; min-width:120px;">
-            ${TIPUS_FACTURA.map((t) => `<option value="${t}">${t === 'factura' ? 'Factura' : 'Despesa'}</option>`).join('')}
-          </select>
-          <input type="text" id="fr-proveidor" list="dl-proveidors" placeholder="Proveïdor (o nom lliure)" style="flex:2; min-width:200px;" />
-          <datalist id="dl-proveidors">
-            ${proveidorsCache.map((p) => `<option value="${p.nom}" data-id="${p.id}"></option>`).join('')}
-          </datalist>
-          <input type="date" id="fr-data-factura" required style="flex:1; min-width:140px;" />
-          <select id="fr-activitat" style="flex:1; min-width:130px;">
-            <option value="">Activitat...</option>
-            ${ACTIVITATS.map((a) => `<option value="${a}">${a}</option>`).join('')}
-          </select>
-        </div>
-
-        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-          <select id="fr-forma-pagament" style="flex:1; min-width:150px;">
-            <option value="">Forma de pagament...</option>
-            ${FORMES_PAGAMENT.map((f) => `<option value="${f}">${f}</option>`).join('')}
-          </select>
-          <select id="fr-compte-bancari" style="display:none; flex:1; min-width:180px;">
-            <option value="">Compte...</option>
-            ${comptesCache.map((c) => `<option value="${c.id}">${c.entitatNom} · ${c.descripcio ?? c.num_compte}</option>`).join('')}
-          </select>
-          <select id="fr-soci" style="display:none; flex:1; min-width:150px;">
-            <option value="">Soci...</option>
-            ${socisCache.map((s) => `<option value="${s.id}">${s.nom}</option>`).join('')}
-          </select>
-          <p id="fr-confirming-nota" style="display:none; flex:1; min-width:150px; font-size:12px; color:var(--gaco-text-secondary); margin:0; align-self:center;">
-            S'enllaçarà a la liquidació de confirming quan es tanqui el període (Finançament → Confirming).
-          </p>
-        </div>
-
-        <button type="button" id="toggle-mes-camps-fr" style="margin-bottom:8px;">Més camps ▾</button>
-        <div id="mes-camps-fr" style="display:none; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-          <input type="text" id="fr-num-factura" placeholder="Núm. factura proveïdor" style="min-width:160px;" />
-          <input type="date" id="fr-data-recepcio" title="Data recepció" style="min-width:140px;" />
-          <input type="date" id="fr-data-venciment" title="Data venciment" style="min-width:140px;" />
-          <input type="number" id="fr-exercici" placeholder="Exercici" value="${ANY_ACTUAL}" style="width:100px;" />
-          <input type="number" step="0.01" id="fr-irpf-pct" placeholder="% IRPF" style="width:100px;" />
-          <input type="number" step="0.01" id="fr-irpf" placeholder="Import IRPF" style="width:120px;" />
-          <label style="display:flex; align-items:center; gap:6px; font-size:13px;">
-            <input type="checkbox" id="fr-imprevist" />
-            Imprevist / puntual
-          </label>
-          <textarea id="fr-notes" placeholder="Notes" style="width:100%; min-height:50px;"></textarea>
-        </div>
-
-        <button type="submit">Afegir factura</button>
-      </form>
-    </div>
+    <datalist id="dl-proveidors">
+      ${proveidorsCache.map((p) => `<option value="${p.nom}" data-id="${p.id}"></option>`).join('')}
+    </datalist>
 
     <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+        <p style="font-weight:500; margin:0;">Factures rebudes (<span id="comptador-factures">0</span>)</p>
+        <div style="display:flex; gap:8px;">
+          <button type="button" id="btn-exportar-pdf">Exportar PDF</button>
+          <button type="button" id="btn-nova-factura" style="background:var(--gaco-accent); color:#fff; border:none; border-radius:var(--gaco-radius); padding:8px 14px; cursor:pointer;">+ Nova factura</button>
+        </div>
+      </div>
+
       <button type="button" id="toggle-filtres" style="margin-bottom:8px;">Filtres ▾</button>
-      <div id="bloc-filtres" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+      <div id="bloc-filtres" style="display:none; gap:8px; flex-wrap:wrap; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--gaco-border);">
         <select id="f-exercici" style="min-width:130px;">
           <option value="">Tots els exercicis</option>
           ${anysDisponibles().map((a) => `<option value="${a}" ${a === filtre.exercici ? 'selected' : ''}>${a}</option>`).join('')}
@@ -138,7 +105,7 @@ export async function render() {
         <div id="f-estats" style="display:flex; gap:4px; flex-wrap:wrap; align-items:center;">
           ${ESTATS.map((e) => `
             <label style="font-size:12px; display:flex; align-items:center; gap:3px;">
-              <input type="checkbox" class="chk-estat" value="${e}" /> ${e}
+              <input type="checkbox" class="chk-estat" value="${e}" /> ${ETIQUETES_ESTAT[e]}
             </label>`).join('')}
         </div>
         <div id="f-tipus" style="display:flex; gap:4px; flex-wrap:wrap; align-items:center;">
@@ -150,35 +117,15 @@ export async function render() {
         <button type="button" id="btn-aplicar-filtres">Aplicar</button>
         <button type="button" id="btn-netejar-filtres">Netejar</button>
       </div>
-    </div>
 
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-        <p style="font-weight:500; margin:0;">Factures (<span id="comptador-factures">0</span>)</p>
-        <button type="button" id="btn-exportar-pdf">Exportar PDF</button>
-      </div>
       <div id="llista-factures"></div>
     </div>
   `;
 
-  // Toggles de blocs plegables (style.display, no hidden — bug ja conegut)
-  document.getElementById('toggle-mes-camps-fr').addEventListener('click', () => {
-    const bloc = document.getElementById('mes-camps-fr');
-    bloc.style.display = bloc.style.display === 'none' ? 'flex' : 'none';
-  });
   document.getElementById('toggle-filtres').addEventListener('click', () => {
     const bloc = document.getElementById('bloc-filtres');
     bloc.style.display = bloc.style.display === 'none' ? 'flex' : 'none';
   });
-
-  // Forma de pagament: mostra el selector secundari corresponent
-  document.getElementById('fr-forma-pagament').addEventListener('change', (e) => {
-    document.getElementById('fr-compte-bancari').style.display = e.target.value === 'compte_bancari' ? 'block' : 'none';
-    document.getElementById('fr-soci').style.display = e.target.value === 'soci' ? 'block' : 'none';
-    document.getElementById('fr-confirming-nota').style.display = e.target.value === 'confirming' ? 'block' : 'none';
-  });
-
-  document.getElementById('form-factura-rebuda').addEventListener('submit', altaRapida);
   document.getElementById('btn-aplicar-filtres').addEventListener('click', () => {
     llegirFiltresDelFormulari();
     carregarLlista();
@@ -188,10 +135,9 @@ export async function render() {
     render();
   });
   document.getElementById('btn-exportar-pdf').addEventListener('click', exportarPdf);
+  document.getElementById('btn-nova-factura').addEventListener('click', obrirModalNovaFactura);
 
-  // Preomplir els inputs de filtre amb l'estat actual (per si es torna d'una edició)
   restaurarFiltresAlFormulari();
-
   await carregarLlista();
 }
 
@@ -211,49 +157,9 @@ async function carregarDadesSuport() {
 }
 
 function anysDisponibles() {
-  // Rang senzill: 3 anys enrere fins l'any en curs. Ajustar si cal més històric.
   const anys = [];
   for (let a = ANY_ACTUAL; a >= ANY_ACTUAL - 3; a--) anys.push(a);
   return anys;
-}
-
-async function altaRapida(e) {
-  e.preventDefault();
-
-  const nomProveidorText = document.getElementById('fr-proveidor').value.trim();
-  const proveidorTrobat = proveidorsCache.find((p) => p.nom === nomProveidorText);
-
-  const formaPagament = document.getElementById('fr-forma-pagament').value || null;
-
-  const nova = {
-    tipus_factura: document.getElementById('fr-tipus-factura').value,
-    proveidor_id: proveidorTrobat?.id ?? null,
-    contrapart_nom: proveidorTrobat ? null : (nomProveidorText || null),
-    data_factura: document.getElementById('fr-data-factura').value,
-    activitat: document.getElementById('fr-activitat').value || null,
-    forma_pagament: formaPagament,
-    compte_bancari_id: formaPagament === 'compte_bancari' ? (document.getElementById('fr-compte-bancari').value || null) : null,
-    soci_id: formaPagament === 'soci' ? (document.getElementById('fr-soci').value || null) : null,
-    confirming_id: null, // mai a l'alta — cas d'ús real de confirming és a factures emeses, no aquí
-    num_factura: document.getElementById('fr-num-factura').value.trim() || null,
-    data_recepcio: document.getElementById('fr-data-recepcio').value || null,
-    data_venciment: document.getElementById('fr-data-venciment').value || null,
-    exercici: Number(document.getElementById('fr-exercici').value) || new Date(document.getElementById('fr-data-factura').value).getFullYear(),
-    irpf_pct: document.getElementById('fr-irpf-pct').value ? Number(document.getElementById('fr-irpf-pct').value) : null,
-    irpf: document.getElementById('fr-irpf').value ? Number(document.getElementById('fr-irpf').value) : null,
-    imprevist: document.getElementById('fr-imprevist').checked,
-    notes: document.getElementById('fr-notes').value.trim() || null,
-    estat: 'pendent',
-  };
-
-  if (!nova.tipus_factura || !nova.data_factura) return;
-  if (!nova.proveidor_id && !nova.contrapart_nom) {
-    return alert('Cal indicar un proveïdor o un nom.');
-  }
-
-  const { error } = await supabase.from('gaco_factures_rebudes').insert(nova);
-  if (error) return alert(`Error afegint factura: ${error.message}`);
-  render();
 }
 
 // -----------------------------------------------------------------------
@@ -327,7 +233,6 @@ async function carregarLlista() {
   if (filtre.estats.length) query = query.in('estat', filtre.estats);
   if (filtre.tipus.length) query = query.in('tipus_factura', filtre.tipus);
 
-  // Filtre per concepte: viu al detall, cal resoldre primer els factura_id afectats
   if (filtre.categoriaId) {
     const { data: linies } = await supabase
       .from('gaco_detall_factures_rebudes')
@@ -364,28 +269,23 @@ function pintarLlista(llista) {
   contenidor.innerHTML = llista
     .map(
       (f) => `
-    <div style="border-top:0.5px solid var(--gaco-border); padding:10px 0;">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div>
-          <p style="margin:0;">
-            ${formatData(f.data_factura)} · ${f.proveidor?.nom ?? f.contrapart_nom ?? '—'}
-            ${f.num_factura ? `· ${f.num_factura}` : ''}
-            <span style="font-size:11px; color:var(--gaco-text-secondary);">(${f.tipus_factura})</span>
-          </p>
-          <p style="margin:2px 0 0; font-size:12px; color:var(--gaco-text-secondary);">
-            Total: ${formatImport(f.total)} · Pendent: ${formatImport(f.import_pendent)} · <span style="color:var(--gaco-accent);">${f.estat}</span>
-          </p>
-        </div>
-        <button data-veure="${f.id}">Veure/Editar</button>
+    <div style="border-top:0.5px solid var(--gaco-border); padding:10px 0; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <div>
+        <p style="margin:0; font-weight:500;">${f.proveidor?.nom ?? f.contrapart_nom ?? '—'}</p>
+        <p style="margin:2px 0 0; font-size:12px; color:var(--gaco-text-secondary);">
+          Data: ${formatData(f.data_factura)} · Núm.: ${f.num_factura ?? '—'} · Tipus: ${f.tipus_factura}
+          · Total: ${formatImport(f.total)} · Pendent: ${formatImport(f.import_pendent)}
+          · Estat: <span style="color:var(--gaco-accent);">${ETIQUETES_ESTAT[f.estat] ?? f.estat}</span>
+        </p>
       </div>
-      <div id="edit-factura-${f.id}" style="display:none; margin-top:10px; padding-top:10px; border-top:0.5px dashed var(--gaco-border);"></div>
+      <button data-veure="${f.id}">Veure/Editar</button>
     </div>
   `
     )
     .join('');
 
   contenidor.querySelectorAll('[data-veure]').forEach((btn) => {
-    btn.addEventListener('click', () => obrirEdicio(btn.dataset.veure));
+    btn.addEventListener('click', () => obrirModalFactura(btn.dataset.veure));
   });
 }
 
@@ -398,51 +298,143 @@ function formatImport(n) {
   return `${Number(n).toFixed(2)} €`;
 }
 
-function obrirEdicio(id) {
-  const factura = resultatActual.find((f) => f.id === id);
-  const bloc = document.getElementById(`edit-factura-${id}`);
-  const esVisible = bloc.style.display !== 'none';
+// -----------------------------------------------------------------------
+// Modal — Nova factura (bloc A, minimalista, per crear la capçalera)
+// -----------------------------------------------------------------------
 
-  document.querySelectorAll('[id^="edit-factura-"]').forEach((el) => (el.style.display = 'none'));
-  if (esVisible) return;
+function obrirModalNovaFactura() {
+  openModal({
+    title: 'Nova factura rebuda',
+    bodyHtml: `
+      ${htmlSeccioA(null)}
+      <button type="button" id="btn-crear-factura" style="background:var(--gaco-accent); color:#fff; border:none; border-radius:var(--gaco-radius); padding:8px 14px; cursor:pointer;">
+        Crear factura i continuar
+      </button>
+      <p style="font-size:12px; color:var(--gaco-text-secondary); margin-top:8px;">
+        Un cop creada podràs afegir-hi línies, venciment i forma de pagament.
+      </p>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-crear-factura').addEventListener('click', () => crearFacturaDesDeModal(body));
+    },
+  });
+}
 
-  bloc.style.display = 'block';
-  bloc.innerHTML = `
-    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-      <input type="text" id="ed-num-factura-${id}" placeholder="Núm. factura" value="${factura.num_factura ?? ''}" style="min-width:150px;" />
-      <input type="date" id="ed-data-venciment-${id}" value="${factura.data_venciment ?? ''}" style="min-width:140px;" />
-      <select id="ed-estat-${id}" style="min-width:160px;">
-        ${ESTATS.map((e) => `<option value="${e}" ${factura.estat === e ? 'selected' : ''}>${e}</option>`).join('')}
-      </select>
-      <input type="number" step="0.01" id="ed-irpf-pct-${id}" placeholder="% IRPF" value="${factura.irpf_pct ?? ''}" style="width:100px;" />
-      <input type="number" step="0.01" id="ed-irpf-${id}" placeholder="Import IRPF" value="${factura.irpf ?? ''}" style="width:120px;" />
-    </div>
-    <textarea id="ed-notes-${id}" placeholder="Notes" style="width:100%; min-height:50px; margin-bottom:8px;">${factura.notes ?? ''}</textarea>
-    <button data-desar="${id}">Desar canvis de capçalera</button>
+async function crearFacturaDesDeModal(body) {
+  const nomProveidorText = body.querySelector('#m-proveidor').value.trim();
+  const proveidorTrobat = proveidorsCache.find((p) => p.nom === nomProveidorText);
+  const dataFactura = body.querySelector('#m-data-factura').value;
 
-    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--gaco-border);">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <p style="font-weight:500; margin:0;">Línies</p>
-        <p id="totals-linies-${id}" style="margin:0; font-size:12px; color:var(--gaco-text-secondary);"></p>
+  if (!dataFactura) return alert('Cal indicar la data de factura.');
+  if (!proveidorTrobat && !nomProveidorText) return alert('Cal indicar un proveïdor o un nom.');
+
+  const nova = {
+    tipus_factura: body.querySelector('#m-tipus-factura').value,
+    proveidor_id: proveidorTrobat?.id ?? null,
+    contrapart_nom: proveidorTrobat ? null : nomProveidorText,
+    num_factura: body.querySelector('#m-num-factura').value.trim() || null,
+    data_factura: dataFactura,
+    data_recepcio: body.querySelector('#m-data-recepcio').value || null,
+    activitat: body.querySelector('#m-activitat').value || null,
+    exercici: Number(body.querySelector('#m-exercici').value) || new Date(dataFactura).getFullYear(),
+    imprevist: body.querySelector('#m-imprevist').checked,
+    confirming_id: null,
+    estat: 'pendent',
+  };
+
+  const { data, error } = await supabase.from('gaco_factures_rebudes').insert(nova).select().single();
+  if (error) return alert(`Error creant la factura: ${error.message}`);
+
+  await carregarLlista();
+  obrirModalFactura(data.id);
+}
+
+// -----------------------------------------------------------------------
+// Modal — Veure/Editar factura completa (A + B línies + C venciment/pagament)
+// -----------------------------------------------------------------------
+
+async function obrirModalFactura(id) {
+  const { data: f, error } = await supabase
+    .from('gaco_factures_rebudes')
+    .select('*, proveidor:gaco_proveidors(nom)')
+    .eq('id', id)
+    .single();
+
+  if (error) return alert(`Error carregant la factura: ${error.message}`);
+
+  openModal({
+    title: `Factura · ${f.proveidor?.nom ?? f.contrapart_nom ?? '—'}`,
+    wide: true,
+    bodyHtml: `
+      ${htmlSeccioA(f)}
+      ${htmlSeccioB()}
+      ${htmlSeccioC(f)}
+      <button type="button" id="btn-desar-factura" style="background:var(--gaco-accent); color:#fff; border:none; border-radius:var(--gaco-radius); padding:8px 14px; cursor:pointer;">
+        Desar canvis
+      </button>
+    `,
+    onMount: (body) => vincularModalFactura(body, f),
+  });
+}
+
+function htmlSeccioA(f) {
+  const provNom = f?.proveidor?.nom ?? f?.contrapart_nom ?? '';
+  return `
+    <div class="modal-section">
+      <p class="modal-section-title">A · Dades de la factura</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <select id="m-tipus-factura" style="flex:1; min-width:120px;">
+          ${TIPUS_FACTURA.map((t) => `<option value="${t}" ${f?.tipus_factura === t ? 'selected' : ''}>${t === 'factura' ? 'Factura' : 'Despesa'}</option>`).join('')}
+        </select>
+        <input type="text" id="m-proveidor" list="dl-proveidors" placeholder="Proveïdor (o nom lliure)" value="${provNom}" style="flex:2; min-width:200px;" />
+        <input type="text" id="m-num-factura" placeholder="Núm. factura proveïdor" value="${f?.num_factura ?? ''}" style="flex:1; min-width:150px;" />
       </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <label style="font-size:12px; color:var(--gaco-text-secondary); display:flex; flex-direction:column; gap:2px; flex:1; min-width:140px;">
+          Data factura
+          <input type="date" id="m-data-factura" required value="${f?.data_factura ?? ''}" />
+        </label>
+        <label style="font-size:12px; color:var(--gaco-text-secondary); display:flex; flex-direction:column; gap:2px; flex:1; min-width:140px;">
+          Data recepció
+          <input type="date" id="m-data-recepcio" value="${f?.data_recepcio ?? ''}" />
+        </label>
+        <select id="m-activitat" style="flex:1; min-width:130px; align-self:flex-end;">
+          <option value="">Activitat...</option>
+          ${ACTIVITATS.map((a) => `<option value="${a}" ${f?.activitat === a ? 'selected' : ''}>${a}</option>`).join('')}
+        </select>
+        <input type="number" id="m-exercici" placeholder="Exercici" value="${f?.exercici ?? ANY_ACTUAL}" style="width:100px; align-self:flex-end;" />
+      </div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px;">
+        <input type="checkbox" id="m-imprevist" ${f?.imprevist ? 'checked' : ''} />
+        Imprevist / puntual
+      </label>
+    </div>
+  `;
+}
 
-      <div id="llista-linies-${id}" style="margin-bottom:12px;"></div>
-
-      <form id="form-linia-${id}" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
-        <select id="ln-categoria-${id}" required style="min-width:200px;">
+function htmlSeccioB() {
+  return `
+    <div class="modal-section">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:4px;">
+        <p class="modal-section-title" style="margin:0;">B · Línies</p>
+        <p id="totals-linies" style="margin:0; font-size:12px; font-weight:500; color:var(--gaco-accent);"></p>
+      </div>
+      <div id="llista-linies" style="margin-bottom:12px;"></div>
+      <form id="form-linia" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+        <select id="ln-categoria" required style="min-width:200px;">
           <option value="">Concepte...</option>
           ${conceptesCache.map((c) => `<option value="${c.id}" data-tipus="${c.tipus}">${c.grup} · ${c.nom}</option>`).join('')}
         </select>
-        <input type="text" id="ln-descripcio-${id}" placeholder="Descripció" style="flex:1; min-width:160px;" />
-        <input type="number" step="0.01" id="ln-quantitat-${id}" placeholder="Quantitat" value="1" style="width:90px;" />
-        <input type="number" step="0.01" id="ln-preu-${id}" placeholder="Preu unitari" required style="width:110px;" />
-        <input type="number" step="0.01" id="ln-descompte-pct-${id}" placeholder="% desc." style="width:90px;" />
-        <input type="number" step="0.01" id="ln-iva-pct-${id}" placeholder="% IVA" value="21" style="width:90px;" />
-        <select id="ln-proveidor-suplit-${id}" style="display:none; min-width:160px;">
+        <input type="text" id="ln-descripcio" placeholder="Descripció" style="flex:1; min-width:160px;" />
+        <input type="number" step="0.01" id="ln-quantitat" placeholder="Quantitat" value="1" style="width:90px;" />
+        <input type="number" step="0.01" id="ln-preu" placeholder="Preu unitari" required style="width:110px;" />
+        <input type="number" step="0.01" id="ln-descompte-pct" placeholder="% desc." style="width:90px;" />
+        <input type="number" step="0.01" id="ln-iva-pct" placeholder="% IVA" value="21" style="width:90px;" />
+        <select id="ln-proveidor-suplit" style="display:none; min-width:160px;">
           <option value="">Proveïdor del suplit...</option>
           ${proveidorsCache.map((p) => `<option value="${p.id}">${p.nom}</option>`).join('')}
         </select>
-        <select id="ln-immobilitzat-${id}" style="display:none; min-width:160px;">
+        <select id="ln-immobilitzat" style="display:none; min-width:160px;">
           <option value="">Immobilitzat...</option>
           ${immobilitzatCache.map((m) => `<option value="${m.id}">${m.nom}</option>`).join('')}
         </select>
@@ -450,39 +442,112 @@ function obrirEdicio(id) {
       </form>
     </div>
   `;
+}
 
-  bloc.querySelector(`[data-desar="${id}"]`).addEventListener('click', async () => {
-    const actualitzat = {
-      num_factura: document.getElementById(`ed-num-factura-${id}`).value.trim() || null,
-      data_venciment: document.getElementById(`ed-data-venciment-${id}`).value || null,
-      estat: document.getElementById(`ed-estat-${id}`).value,
-      irpf_pct: document.getElementById(`ed-irpf-pct-${id}`).value ? Number(document.getElementById(`ed-irpf-pct-${id}`).value) : null,
-      irpf: document.getElementById(`ed-irpf-${id}`).value ? Number(document.getElementById(`ed-irpf-${id}`).value) : null,
-      notes: document.getElementById(`ed-notes-${id}`).value.trim() || null,
-    };
-    const { error } = await supabase.from('gaco_factures_rebudes').update(actualitzat).eq('id', id);
-    if (error) return alert(`Error desant: ${error.message}`);
-    render();
+function htmlSeccioC(f) {
+  return `
+    <div class="modal-section">
+      <p class="modal-section-title">C · Venciment i pagament</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <label style="font-size:12px; color:var(--gaco-text-secondary); display:flex; flex-direction:column; gap:2px; flex:1; min-width:140px;">
+          Data venciment
+          <input type="date" id="m-data-venciment" value="${f?.data_venciment ?? ''}" />
+        </label>
+        <select id="m-forma-pagament" style="flex:1; min-width:150px; align-self:flex-end;">
+          <option value="">Forma de pagament...</option>
+          ${FORMES_PAGAMENT.map((fp) => `<option value="${fp}" ${f?.forma_pagament === fp ? 'selected' : ''}>${fp}</option>`).join('')}
+        </select>
+        <select id="m-compte-bancari" style="display:${f?.forma_pagament === 'compte_bancari' ? 'block' : 'none'}; flex:1; min-width:180px; align-self:flex-end;">
+          <option value="">Compte...</option>
+          ${comptesCache.map((c) => `<option value="${c.id}" ${f?.compte_bancari_id === c.id ? 'selected' : ''}>${c.entitatNom} · ${c.descripcio ?? c.num_compte}</option>`).join('')}
+        </select>
+        <select id="m-soci" style="display:${f?.forma_pagament === 'soci' ? 'block' : 'none'}; flex:1; min-width:150px; align-self:flex-end;">
+          <option value="">Soci...</option>
+          ${socisCache.map((s) => `<option value="${s.id}" ${f?.soci_id === s.id ? 'selected' : ''}>${s.nom}</option>`).join('')}
+        </select>
+        <p id="m-confirming-nota" style="display:${f?.forma_pagament === 'confirming' ? 'block' : 'none'}; flex:1; min-width:150px; font-size:12px; color:var(--gaco-text-secondary); margin:0; align-self:center;">
+          S'enllaçarà a la liquidació de confirming quan es tanqui el període (Finançament → Confirming).
+        </p>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
+        <select id="m-estat" style="min-width:180px;">
+          ${ESTATS.map((e) => `<option value="${e}" ${(f?.estat ?? 'pendent') === e ? 'selected' : ''}>${ETIQUETES_ESTAT[e]}</option>`).join('')}
+        </select>
+        <input type="number" step="0.01" id="m-irpf-pct" placeholder="% IRPF" value="${f?.irpf_pct ?? ''}" style="width:100px;" />
+        <input type="number" step="0.01" id="m-irpf" placeholder="Import IRPF" value="${f?.irpf ?? ''}" style="width:120px;" />
+        <p style="margin:0; font-size:13px; color:var(--gaco-text-secondary);">
+          Pagat: ${formatImport(f?.import_pagat)} · Pendent: ${formatImport(f?.import_pendent)}
+        </p>
+      </div>
+      <textarea id="m-notes" placeholder="Notes" style="width:100%; min-height:50px;">${f?.notes ?? ''}</textarea>
+    </div>
+  `;
+}
+
+function vincularModalFactura(body, f) {
+  body.querySelector('#m-forma-pagament').addEventListener('change', (e) => {
+    body.querySelector('#m-compte-bancari').style.display = e.target.value === 'compte_bancari' ? 'block' : 'none';
+    body.querySelector('#m-soci').style.display = e.target.value === 'soci' ? 'block' : 'none';
+    body.querySelector('#m-confirming-nota').style.display = e.target.value === 'confirming' ? 'block' : 'none';
   });
 
-  // Mostrar proveidor_suplit / immobilitzat només quan el concepte triat ho requereix
-  document.getElementById(`ln-categoria-${id}`).addEventListener('change', (e) => {
+  body.querySelector('#ln-categoria').addEventListener('change', (e) => {
     const tipus = e.target.selectedOptions[0]?.dataset.tipus;
-    document.getElementById(`ln-proveidor-suplit-${id}`).style.display = tipus === 'suplits' ? 'block' : 'none';
-    document.getElementById(`ln-immobilitzat-${id}`).style.display = tipus === 'actiu' ? 'block' : 'none';
+    body.querySelector('#ln-proveidor-suplit').style.display = tipus === 'suplits' ? 'block' : 'none';
+    body.querySelector('#ln-immobilitzat').style.display = tipus === 'actiu' ? 'block' : 'none';
   });
 
-  document.getElementById(`form-linia-${id}`).addEventListener('submit', (e) => altaLinia(e, id));
+  body.querySelector('#form-linia').addEventListener('submit', (e) => altaLinia(e, body, f.id));
+  body.querySelector('#btn-desar-factura').addEventListener('click', () => desarCapcalera(body, f.id));
 
-  carregarLinies(id);
+  carregarLinies(body, f.id);
+}
+
+async function desarCapcalera(body, facturaId) {
+  const nomProveidorText = body.querySelector('#m-proveidor').value.trim();
+  const proveidorTrobat = proveidorsCache.find((p) => p.nom === nomProveidorText);
+  const formaPagament = body.querySelector('#m-forma-pagament').value || null;
+
+  const actualitzat = {
+    tipus_factura: body.querySelector('#m-tipus-factura').value,
+    proveidor_id: proveidorTrobat?.id ?? null,
+    contrapart_nom: proveidorTrobat ? null : (nomProveidorText || null),
+    num_factura: body.querySelector('#m-num-factura').value.trim() || null,
+    data_factura: body.querySelector('#m-data-factura').value,
+    data_recepcio: body.querySelector('#m-data-recepcio').value || null,
+    activitat: body.querySelector('#m-activitat').value || null,
+    exercici: Number(body.querySelector('#m-exercici').value) || null,
+    imprevist: body.querySelector('#m-imprevist').checked,
+    data_venciment: body.querySelector('#m-data-venciment').value || null,
+    forma_pagament: formaPagament,
+    compte_bancari_id: formaPagament === 'compte_bancari' ? (body.querySelector('#m-compte-bancari').value || null) : null,
+    soci_id: formaPagament === 'soci' ? (body.querySelector('#m-soci').value || null) : null,
+    estat: body.querySelector('#m-estat').value,
+    irpf_pct: body.querySelector('#m-irpf-pct').value ? Number(body.querySelector('#m-irpf-pct').value) : null,
+    irpf: body.querySelector('#m-irpf').value ? Number(body.querySelector('#m-irpf').value) : null,
+    notes: body.querySelector('#m-notes').value.trim() || null,
+  };
+
+  const { error } = await supabase.from('gaco_factures_rebudes').update(actualitzat).eq('id', facturaId);
+  if (error) return alert(`Error desant: ${error.message}`);
+
+  // Recalcular el total per si l'IRPF ha canviat (base/iva/suplits ja estan al dia per les línies)
+  const { data: linies } = await supabase
+    .from('gaco_detall_factures_rebudes')
+    .select('*, categoria:gaco_conceptes_comptables(tipus)')
+    .eq('factura_id', facturaId);
+  await recalcularCapcalera(facturaId, linies ?? []);
+
+  closeModal();
+  await carregarLlista();
 }
 
 // -----------------------------------------------------------------------
 // Línies de detall (gaco_detall_factures_rebudes)
 // -----------------------------------------------------------------------
 
-async function carregarLinies(facturaId) {
-  const contenidor = document.getElementById(`llista-linies-${facturaId}`);
+async function carregarLinies(body, facturaId) {
+  const contenidor = body.querySelector('#llista-linies');
   contenidor.innerHTML = '<p>Carregant línies...</p>';
 
   const { data, error } = await supabase
@@ -496,12 +561,12 @@ async function carregarLinies(facturaId) {
     return;
   }
 
-  pintarLinies(facturaId, data ?? []);
+  pintarLinies(body, facturaId, data ?? []);
   await recalcularCapcalera(facturaId, data ?? []);
 }
 
-function pintarLinies(facturaId, linies) {
-  const contenidor = document.getElementById(`llista-linies-${facturaId}`);
+function pintarLinies(body, facturaId, linies) {
+  const contenidor = body.querySelector('#llista-linies');
 
   if (linies.length === 0) {
     contenidor.innerHTML = '<p style="color:var(--gaco-text-secondary); font-size:13px;">Encara no hi ha línies.</p>';
@@ -521,7 +586,7 @@ function pintarLinies(facturaId, linies) {
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
         <span>${formatImport(l.total_linia)} ${l.categoria?.tipus !== 'suplits' ? `+ ${formatImport(l.iva)} IVA` : ''}</span>
-        <button data-eliminar-linia="${l.id}" data-factura="${facturaId}" title="Eliminar línia">✕</button>
+        <button data-eliminar-linia="${l.id}" title="Eliminar línia">✕</button>
       </div>
     </div>
   `
@@ -529,19 +594,19 @@ function pintarLinies(facturaId, linies) {
     .join('');
 
   contenidor.querySelectorAll('[data-eliminar-linia]').forEach((btn) => {
-    btn.addEventListener('click', () => eliminarLinia(btn.dataset.eliminarLinia, btn.dataset.factura));
+    btn.addEventListener('click', () => eliminarLinia(btn.dataset.eliminarLinia, body, facturaId));
   });
 }
 
-async function altaLinia(e, facturaId) {
+async function altaLinia(e, body, facturaId) {
   e.preventDefault();
 
-  const categoriaId = document.getElementById(`ln-categoria-${facturaId}`).value;
+  const categoriaId = body.querySelector('#ln-categoria').value;
   const categoria = conceptesCache.find((c) => c.id === categoriaId);
-  const quantitat = Number(document.getElementById(`ln-quantitat-${facturaId}`).value) || 1;
-  const preuUnitari = Number(document.getElementById(`ln-preu-${facturaId}`).value) || 0;
-  const descomptePct = Number(document.getElementById(`ln-descompte-pct-${facturaId}`).value) || 0;
-  const ivaPct = Number(document.getElementById(`ln-iva-pct-${facturaId}`).value) || 0;
+  const quantitat = Number(body.querySelector('#ln-quantitat').value) || 1;
+  const preuUnitari = Number(body.querySelector('#ln-preu').value) || 0;
+  const descomptePct = Number(body.querySelector('#ln-descompte-pct').value) || 0;
+  const ivaPct = Number(body.querySelector('#ln-iva-pct').value) || 0;
 
   const importBase = quantitat * preuUnitari;
   const importDescompte = importBase * (descomptePct / 100);
@@ -554,7 +619,7 @@ async function altaLinia(e, facturaId) {
   const novaLinia = {
     factura_id: facturaId,
     categoria_id: categoriaId,
-    descripcio: document.getElementById(`ln-descripcio-${facturaId}`).value.trim() || null,
+    descripcio: body.querySelector('#ln-descripcio').value.trim() || null,
     quantitat,
     preu_unitari: preuUnitari,
     descompte_pct: descomptePct || null,
@@ -563,24 +628,24 @@ async function altaLinia(e, facturaId) {
     total_linia: totalLinia,
     iva_pct: categoria?.tipus === 'suplits' ? null : ivaPct,
     iva,
-    proveidor_suplit_id: categoria?.tipus === 'suplits' ? (document.getElementById(`ln-proveidor-suplit-${facturaId}`).value || null) : null,
-    immobilitzat_id: categoria?.tipus === 'actiu' ? (document.getElementById(`ln-immobilitzat-${facturaId}`).value || null) : null,
+    proveidor_suplit_id: categoria?.tipus === 'suplits' ? (body.querySelector('#ln-proveidor-suplit').value || null) : null,
+    immobilitzat_id: categoria?.tipus === 'actiu' ? (body.querySelector('#ln-immobilitzat').value || null) : null,
   };
 
   const { error } = await supabase.from('gaco_detall_factures_rebudes').insert(novaLinia);
   if (error) return alert(`Error afegint línia: ${error.message}`);
 
   e.target.reset();
-  document.getElementById(`ln-quantitat-${facturaId}`).value = 1;
-  document.getElementById(`ln-iva-pct-${facturaId}`).value = 21;
-  await carregarLinies(facturaId);
+  body.querySelector('#ln-quantitat').value = 1;
+  body.querySelector('#ln-iva-pct').value = 21;
+  await carregarLinies(body, facturaId);
 }
 
-async function eliminarLinia(liniaId, facturaId) {
+async function eliminarLinia(liniaId, body, facturaId) {
   if (!confirm('Eliminar aquesta línia?')) return;
   const { error } = await supabase.from('gaco_detall_factures_rebudes').delete().eq('id', liniaId);
   if (error) return alert(`Error eliminant línia: ${error.message}`);
-  await carregarLinies(facturaId);
+  await carregarLinies(body, facturaId);
 }
 
 // -----------------------------------------------------------------------
@@ -601,26 +666,20 @@ async function recalcularCapcalera(facturaId, linies) {
     }
   }
 
-  const factura = resultatActual.find((f) => f.id === facturaId);
-  const irpf = Number(factura?.irpf) || 0;
+  const { data: capcalera } = await supabase.from('gaco_factures_rebudes').select('irpf, import_pagat').eq('id', facturaId).single();
+  const irpf = Number(capcalera?.irpf) || 0;
   const total = baseImposable + iva - irpf + suplits;
-  const importPagat = Number(factura?.import_pagat) || 0;
+  const importPagat = Number(capcalera?.import_pagat) || 0;
   const importPendent = total - importPagat;
 
-  const totalsEl = document.getElementById(`totals-linies-${facturaId}`);
+  const totalsEl = document.getElementById('totals-linies');
   if (totalsEl) {
-    totalsEl.textContent = `Base: ${formatImport(baseImposable)} · IVA: ${formatImport(iva)} · Suplits: ${formatImport(suplits)} · Total: ${formatImport(total)}`;
+    totalsEl.textContent = `Base: ${formatImport(baseImposable)} · IVA: ${formatImport(iva)} · Suplits: ${formatImport(suplits)} · IRPF: ${formatImport(irpf)} · Total: ${formatImport(total)}`;
   }
 
   const { error } = await supabase
     .from('gaco_factures_rebudes')
-    .update({
-      base_imposable: baseImposable,
-      iva,
-      suplits,
-      total,
-      import_pendent: importPendent,
-    })
+    .update({ base_imposable: baseImposable, iva, suplits, total, import_pendent: importPendent })
     .eq('id', facturaId);
 
   if (error) console.error('Error actualitzant totals de capçalera:', error);
@@ -673,7 +732,7 @@ async function exportarPdf() {
     formatImport(f.iva),
     formatImport(f.suplits),
     formatImport(f.total),
-    f.estat,
+    ETIQUETES_ESTAT[f.estat] ?? f.estat,
   ]);
 
   const sumar = (camp) => resultatActual.reduce((acc, f) => acc + (Number(f[camp]) || 0), 0);
@@ -697,7 +756,7 @@ function descripcioFiltreActiu() {
     const nom = filtre.proveidorId ? proveidorsCache.find((p) => p.id === filtre.proveidorId)?.nom : filtre.contrapartText;
     parts.push(`Proveïdor: ${nom}`);
   }
-  if (filtre.estats.length) parts.push(`Estat: ${filtre.estats.join(', ')}`);
+  if (filtre.estats.length) parts.push(`Estat: ${filtre.estats.map((e) => ETIQUETES_ESTAT[e]).join(', ')}`);
   if (filtre.dataFacturaDes || filtre.dataFacturaFins) {
     parts.push(`Data factura: ${filtre.dataFacturaDes ?? '...'} — ${filtre.dataFacturaFins ?? '...'}`);
   }
