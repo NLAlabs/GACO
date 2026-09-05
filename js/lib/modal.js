@@ -1,12 +1,13 @@
 /**
- * Modal genèric i reutilitzable. Sense dependències.
+ * Modal genèric i reutilitzable — mateix patró de SAO (.modal / .modal-content
+ * / .close / .active), recolorit amb les variables --gaco-*. Sense dependències.
  * Un sol modal obert a la vegada (obrir-ne un de nou tanca l'anterior).
  *
  * Ús:
  *   openModal({
  *     title: 'Nova factura',
  *     bodyHtml: '<p>...</p>',
- *     wide: false,              // opcional, modal més ample
+ *     wide: false,              // opcional, modal més ample (classe modal-wide)
  *     onMount: (bodyEl) => {},  // opcional, per enganxar listeners un cop al DOM
  *     onClose: () => {},        // opcional, en tancar (X, fora, Escape)
  *   });
@@ -20,18 +21,18 @@ export function openModal({ title, bodyHtml, wide = false, onMount, onClose }) {
   closeModal();
 
   overlayEl = document.createElement('div');
-  overlayEl.className = 'modal-overlay';
+  overlayEl.className = 'modal active';
   overlayEl.innerHTML = `
-    <div class="modal ${wide ? 'modal-wide' : ''}">
-      <button type="button" class="modal-close" aria-label="Tancar">✕</button>
-      <p class="modal-title">${title}</p>
+    <div class="modal-content ${wide ? 'modal-wide' : ''}">
+      <span class="close">&times;</span>
+      <h2>${title}</h2>
       <div class="modal-body">${bodyHtml}</div>
     </div>
   `;
   document.body.appendChild(overlayEl);
   onCloseActual = onClose ?? null;
 
-  overlayEl.querySelector('.modal-close').addEventListener('click', () => closeModal());
+  overlayEl.querySelector('.close').addEventListener('click', () => closeModal());
   overlayEl.addEventListener('click', (e) => {
     if (e.target === overlayEl) closeModal();
   });
