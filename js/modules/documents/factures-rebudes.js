@@ -19,11 +19,19 @@ import { openModal, closeModal } from '../../lib/modal.js';
  * confirming_id: es deixa sempre null. El cas d'ús real del confirming és
  * "nosaltres com a proveïdor de serveis cobrant d'un client" (factures
  * emeses, pendent de fer), no pagar als nostres propis proveïdors.
+ *
+ * metode_pagament_compte: només rellevant quan forma_pagament='compte_bancari'
+ * (domiciliacio|transferencia|targeta) — requereix l'ALTER TABLE corresponent.
+ *
+ * preu_unitari: la columna real és numeric(12,6) (ampliada des de (12,2) —
+ * factures com el gasoil porten preu per litre amb 6 decimals, p.ex.
+ * 0,929000 €/L). Cal l'ALTER TABLE corresponent abans de fer servir això.
  */
 
 const TIPUS_FACTURA = ['factura', 'despesa'];
 const ESTATS = ['pendent', 'pagada_parcial', 'pagada', 'pendent_liquidar_soci', 'liquidada_soci'];
 const FORMES_PAGAMENT = ['compte_bancari', 'soci', 'confirming', 'compensacio'];
+const METODES_PAGAMENT_COMPTE = ['domiciliacio', 'transferencia', 'targeta'];
 const ACTIVITATS = ['fruita_cereal', 'serveis', 'comuna'];
 
 const ETIQUETES_ESTAT = {
@@ -32,6 +40,12 @@ const ETIQUETES_ESTAT = {
   pagada: 'Pagada',
   pendent_liquidar_soci: 'Pendent liquidar soci',
   liquidada_soci: 'Liquidada soci',
+};
+
+const ETIQUETES_METODE_COMPTE = {
+  domiciliacio: 'Domiciliació',
+  transferencia: 'Transferència',
+  targeta: 'Targeta',
 };
 
 const ANY_ACTUAL = new Date().getFullYear();
@@ -297,6 +311,17 @@ function formatImport(n) {
   if (n == null) return '—';
   return `${Number(n).toFixed(2)} €`;
 }
+// Preus unitaris (p.ex. gasoil €/L) poden portar fins a 6 decimals reals.
+// Es mostren traient zeros sobrants, amb un mínim de 2 decimals.
+function formatPreuUnitari(n) {
+  if (n == null) return '—';
+  const num = Number(n);
+  let s = num.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  if (!s.includes('.')) s += '.00';
+  const decimals = s.split('.')[1]?.length ?? 0;
+  if (decimals < 2) s = num.toFixed(2);
+  return `${s} €`;
+}
 
 // -----------------------------------------------------------------------
 // Modal — Nova factura (bloc A, minimalista, per crear la capçalera)
@@ -377,32 +402,30 @@ async function obrirModalFactura(id) {
   });
 }
 
+function camp(label, inputHtml) {
+  return `
+    <label style="font-size:12px; color:var(--gaco-text-secondary); display:flex; flex-direction:column; gap:2px; flex:1; min-width:120px;">
+      ${label}
+      ${inputHtml}
+    </label>
+  `;
+}
+
 function htmlSeccioA(f) {
   const provNom = f?.proveidor?.nom ?? f?.contrapart_nom ?? '';
   return `
     <div class="modal-section">
       <p class="modal-section-title">A · Dades de la factura</p>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-        <select id="m-tipus-factura" style="flex:1; min-width:120px;">
-          ${TIPUS_FACTURA.map((t) => `<option value="${t}" ${f?.tipus_factura === t ? 'selected' : ''}>${t === 'factura' ? 'Factura' : 'Despesa'}</option>`).join('')}
-        </select>
-        <input type="text" id="m-proveidor" list="dl-proveidors" placeholder="Proveïdor (o nom lliure)" value="${provNom}" style="flex:2; min-width:200px;" />
-        <input type="text" id="m-num-factura" placeholder="Núm. factura proveïdor" value="${f?.num_factura ?? ''}" style="flex:1; min-width:150px;" />
+        ${camp('Tipus', `<select id="m-tipus-factura">${TIPUS_FACTURA.map((t) => `<option value="${t}" ${f?.tipus_factura === t ? 'selected' : ''}>${t === 'factura' ? 'Factura' : 'Despesa'}</option>`).join('')}</select>`)}
+        ${camp('Proveïdor', `<input type="text" id="m-proveidor" list="dl-proveidors" placeholder="Nom lliure si no és un proveïdor donat d'alta" value="${provNom}" style="min-width:200px;" />`)}
+        ${camp('Núm. factura proveïdor', `<input type="text" id="m-num-factura" value="${f?.num_factura ?? ''}" />`)}
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-        <label style="font-size:12px; color:var(--gaco-text-secondary); display:flex; flex-direction:column; gap:2px; flex:1; min-width:140px;">
-          Data factura
-          <input type="date" id="m-data-factura" required value="${f?.data_factura ?? ''}" />
-        </label>
-        <label style="font-size:12px; color:var(--gaco-text-secondary); display:flex; flex-direction:column; gap:2px; flex:1; min-width:140px;">
-          Data recepció
-          <input type="date" id="m-data-recepcio" value="${f?.data_recepcio ?? ''}" />
-        </label>
-        <select id="m-activitat" style="flex:1; min-width:130px; align-self:flex-end;">
-          <option value="">Activitat...</option>
-          ${ACTIVITATS.map((a) => `<option value="${a}" ${f?.activitat === a ? 'selected' : ''}>${a}</option>`).join('')}
-        </select>
-        <input type="number" id="m-exercici" placeholder="Exercici" value="${f?.exercici ?? ANY_ACTUAL}" style="width:100px; align-self:flex-end;" />
+        ${camp('Data factura', `<input type="date" id="m-data-factura" required value="${f?.data_factura ?? ''}" />`)}
+        ${camp('Data recepció', `<input type="date" id="m-data-recepcio" value="${f?.data_recepcio ?? ''}" />`)}
+        ${camp('Activitat', `<select id="m-activitat"><option value="">Selecciona...</option>${ACTIVITATS.map((a) => `<option value="${a}" ${f?.activitat === a ? 'selected' : ''}>${a}</option>`).join('')}</select>`)}
+        ${camp('Exercici', `<input type="number" id="m-exercici" value="${f?.exercici ?? ANY_ACTUAL}" style="width:100px;" />`)}
       </div>
       <label style="display:flex; align-items:center; gap:6px; font-size:13px;">
         <input type="checkbox" id="m-imprevist" ${f?.imprevist ? 'checked' : ''} />
@@ -421,24 +444,28 @@ function htmlSeccioB() {
       </div>
       <div id="llista-linies" style="margin-bottom:12px;"></div>
       <form id="form-linia" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
-        <select id="ln-categoria" required style="min-width:200px;">
-          <option value="">Concepte...</option>
-          ${conceptesCache.map((c) => `<option value="${c.id}" data-tipus="${c.tipus}">${c.grup} · ${c.nom}</option>`).join('')}
-        </select>
-        <input type="text" id="ln-descripcio" placeholder="Descripció" style="flex:1; min-width:160px;" />
-        <input type="number" step="0.01" id="ln-quantitat" placeholder="Quantitat" value="1" style="width:90px;" />
-        <input type="number" step="0.01" id="ln-preu" placeholder="Preu unitari" required style="width:110px;" />
-        <input type="number" step="0.01" id="ln-descompte-pct" placeholder="% desc." style="width:90px;" />
-        <input type="number" step="0.01" id="ln-iva-pct" placeholder="% IVA" value="21" style="width:90px;" />
-        <select id="ln-proveidor-suplit" style="display:none; min-width:160px;">
-          <option value="">Proveïdor del suplit...</option>
-          ${proveidorsCache.map((p) => `<option value="${p.id}">${p.nom}</option>`).join('')}
-        </select>
-        <select id="ln-immobilitzat" style="display:none; min-width:160px;">
-          <option value="">Immobilitzat...</option>
-          ${immobilitzatCache.map((m) => `<option value="${m.id}">${m.nom}</option>`).join('')}
-        </select>
+        ${camp('Concepte', `<select id="ln-categoria" required style="min-width:200px;"><option value="">Selecciona...</option>${conceptesCache.map((c) => `<option value="${c.id}" data-tipus="${c.tipus}">${c.grup} · ${c.nom}</option>`).join('')}</select>`)}
+        ${camp('Descripció', `<input type="text" id="ln-descripcio" style="min-width:160px;" />`)}
+        ${camp('Quantitat', `<input type="number" step="0.01" id="ln-quantitat" value="1" style="width:90px;" />`)}
+        ${camp('Preu unitari (€)', `<input type="number" step="0.000001" id="ln-preu" required style="width:130px;" />`)}
+        <button type="button" id="ln-calc-toggle" style="align-self:flex-end; font-size:12px;" title="Calcular el preu unitari a partir de l'import total de la línia (útil quan la factura dona base imposable però no preu/unitat)">
+          🧮 Calcula preu
+        </button>
+        ${camp('% descompte', `<input type="number" step="0.01" id="ln-descompte-pct" style="width:90px;" />`)}
+        ${camp('% IVA', `<input type="number" step="0.01" id="ln-iva-pct" value="21" style="width:90px;" />`)}
+        <div id="ln-bloc-suplit" style="display:none;">
+          ${camp('Proveïdor del suplit', `<select id="ln-proveidor-suplit" style="min-width:160px;"><option value="">Selecciona...</option>${proveidorsCache.map((p) => `<option value="${p.id}">${p.nom}</option>`).join('')}</select>`)}
+        </div>
+        <div id="ln-bloc-immobilitzat" style="display:none;">
+          ${camp('Immobilitzat', `<select id="ln-immobilitzat" style="min-width:160px;"><option value="">Selecciona...</option>${immobilitzatCache.map((m) => `<option value="${m.id}">${m.nom}</option>`).join('')}</select>`)}
+        </div>
         <button type="submit">Afegir línia</button>
+
+        <div id="ln-calc-bloc" style="display:none; gap:6px; align-items:flex-end; width:100%; padding-top:8px; border-top:1px dashed var(--gaco-border);">
+          ${camp('Import de la línia sense IVA (€)', `<input type="number" step="0.01" id="ln-calc-import" style="width:150px;" placeholder="p.ex. base imposable del gasoil" />`)}
+          <button type="button" id="ln-calc-aplicar">Aplica → preu unitari</button>
+          <p style="margin:0; font-size:11px; color:var(--gaco-text-secondary);">Es divideix per la quantitat indicada a dalt.</p>
+        </div>
       </form>
     </div>
   `;
@@ -449,52 +476,60 @@ function htmlSeccioC(f) {
     <div class="modal-section">
       <p class="modal-section-title">C · Venciment i pagament</p>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-        <label style="font-size:12px; color:var(--gaco-text-secondary); display:flex; flex-direction:column; gap:2px; flex:1; min-width:140px;">
-          Data venciment
-          <input type="date" id="m-data-venciment" value="${f?.data_venciment ?? ''}" />
-        </label>
-        <select id="m-forma-pagament" style="flex:1; min-width:150px; align-self:flex-end;">
-          <option value="">Forma de pagament...</option>
-          ${FORMES_PAGAMENT.map((fp) => `<option value="${fp}" ${f?.forma_pagament === fp ? 'selected' : ''}>${fp}</option>`).join('')}
-        </select>
-        <select id="m-compte-bancari" style="display:${f?.forma_pagament === 'compte_bancari' ? 'block' : 'none'}; flex:1; min-width:180px; align-self:flex-end;">
-          <option value="">Compte...</option>
-          ${comptesCache.map((c) => `<option value="${c.id}" ${f?.compte_bancari_id === c.id ? 'selected' : ''}>${c.entitatNom} · ${c.descripcio ?? c.num_compte}</option>`).join('')}
-        </select>
-        <select id="m-soci" style="display:${f?.forma_pagament === 'soci' ? 'block' : 'none'}; flex:1; min-width:150px; align-self:flex-end;">
-          <option value="">Soci...</option>
-          ${socisCache.map((s) => `<option value="${s.id}" ${f?.soci_id === s.id ? 'selected' : ''}>${s.nom}</option>`).join('')}
-        </select>
+        ${camp('Data venciment', `<input type="date" id="m-data-venciment" value="${f?.data_venciment ?? ''}" />`)}
+        ${camp('Forma de pagament', `<select id="m-forma-pagament"><option value="">Selecciona...</option>${FORMES_PAGAMENT.map((fp) => `<option value="${fp}" ${f?.forma_pagament === fp ? 'selected' : ''}>${fp}</option>`).join('')}</select>`)}
+        <div id="m-bloc-compte" style="display:${f?.forma_pagament === 'compte_bancari' ? 'flex' : 'none'}; gap:8px; flex-wrap:wrap;">
+          ${camp('Compte', `<select id="m-compte-bancari" style="min-width:180px;"><option value="">Selecciona...</option>${comptesCache.map((c) => `<option value="${c.id}" ${f?.compte_bancari_id === c.id ? 'selected' : ''}>${c.entitatNom} · ${c.descripcio ?? c.num_compte}</option>`).join('')}</select>`)}
+          ${camp('Mètode', `<select id="m-metode-pagament-compte" style="min-width:150px;"><option value="">Selecciona...</option>${METODES_PAGAMENT_COMPTE.map((mp) => `<option value="${mp}" ${f?.metode_pagament_compte === mp ? 'selected' : ''}>${ETIQUETES_METODE_COMPTE[mp]}</option>`).join('')}</select>`)}
+        </div>
+        <div id="m-bloc-soci" style="display:${f?.forma_pagament === 'soci' ? 'flex' : 'none'};">
+          ${camp('Soci', `<select id="m-soci" style="min-width:150px;"><option value="">Selecciona...</option>${socisCache.map((s) => `<option value="${s.id}" ${f?.soci_id === s.id ? 'selected' : ''}>${s.nom}</option>`).join('')}</select>`)}
+        </div>
         <p id="m-confirming-nota" style="display:${f?.forma_pagament === 'confirming' ? 'block' : 'none'}; flex:1; min-width:150px; font-size:12px; color:var(--gaco-text-secondary); margin:0; align-self:center;">
           S'enllaçarà a la liquidació de confirming quan es tanqui el període (Finançament → Confirming).
         </p>
       </div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
-        <select id="m-estat" style="min-width:180px;">
-          ${ESTATS.map((e) => `<option value="${e}" ${(f?.estat ?? 'pendent') === e ? 'selected' : ''}>${ETIQUETES_ESTAT[e]}</option>`).join('')}
-        </select>
-        <input type="number" step="0.01" id="m-irpf-pct" placeholder="% IRPF" value="${f?.irpf_pct ?? ''}" style="width:100px;" />
-        <input type="number" step="0.01" id="m-irpf" placeholder="Import IRPF" value="${f?.irpf ?? ''}" style="width:120px;" />
-        <p style="margin:0; font-size:13px; color:var(--gaco-text-secondary);">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:8px;">
+        ${camp('Estat', `<select id="m-estat" style="min-width:180px;">${ESTATS.map((e) => `<option value="${e}" ${(f?.estat ?? 'pendent') === e ? 'selected' : ''}>${ETIQUETES_ESTAT[e]}</option>`).join('')}</select>`)}
+        ${camp('% IRPF', `<input type="number" step="0.01" id="m-irpf-pct" value="${f?.irpf_pct ?? ''}" style="width:100px;" />`)}
+        ${camp('Import IRPF (€)', `<input type="number" step="0.01" id="m-irpf" value="${f?.irpf ?? ''}" style="width:120px;" />`)}
+        <p style="margin:0; font-size:13px; color:var(--gaco-text-secondary); align-self:center;">
           Pagat: ${formatImport(f?.import_pagat)} · Pendent: ${formatImport(f?.import_pendent)}
         </p>
       </div>
-      <textarea id="m-notes" placeholder="Notes" style="width:100%; min-height:50px;">${f?.notes ?? ''}</textarea>
+      ${camp('Notes', `<textarea id="m-notes" style="width:100%; min-height:50px;">${f?.notes ?? ''}</textarea>`)}
     </div>
   `;
 }
 
 function vincularModalFactura(body, f) {
   body.querySelector('#m-forma-pagament').addEventListener('change', (e) => {
-    body.querySelector('#m-compte-bancari').style.display = e.target.value === 'compte_bancari' ? 'block' : 'none';
-    body.querySelector('#m-soci').style.display = e.target.value === 'soci' ? 'block' : 'none';
+    body.querySelector('#m-bloc-compte').style.display = e.target.value === 'compte_bancari' ? 'flex' : 'none';
+    body.querySelector('#m-bloc-soci').style.display = e.target.value === 'soci' ? 'flex' : 'none';
     body.querySelector('#m-confirming-nota').style.display = e.target.value === 'confirming' ? 'block' : 'none';
   });
 
   body.querySelector('#ln-categoria').addEventListener('change', (e) => {
     const tipus = e.target.selectedOptions[0]?.dataset.tipus;
-    body.querySelector('#ln-proveidor-suplit').style.display = tipus === 'suplits' ? 'block' : 'none';
-    body.querySelector('#ln-immobilitzat').style.display = tipus === 'actiu' ? 'block' : 'none';
+    body.querySelector('#ln-bloc-suplit').style.display = tipus === 'suplits' ? 'block' : 'none';
+    body.querySelector('#ln-bloc-immobilitzat').style.display = tipus === 'actiu' ? 'block' : 'none';
+  });
+
+  // Calculadora de preu unitari (import ÷ quantitat) — per a factures que
+  // donen base imposable/litres però no el preu per unitat (p.ex. gasoil)
+  body.querySelector('#ln-calc-toggle').addEventListener('click', () => {
+    const bloc = body.querySelector('#ln-calc-bloc');
+    bloc.style.display = bloc.style.display === 'none' ? 'flex' : 'none';
+  });
+  body.querySelector('#ln-calc-aplicar').addEventListener('click', () => {
+    const importLinia = Number(body.querySelector('#ln-calc-import').value) || 0;
+    const quantitat = Number(body.querySelector('#ln-quantitat').value) || 0;
+    if (!quantitat) return alert('Cal indicar la quantitat (p.ex. litres) abans de calcular.');
+    if (!importLinia) return alert("Cal indicar l'import de la línia.");
+    const preu = importLinia / quantitat;
+    body.querySelector('#ln-preu').value = preu.toFixed(6);
+    body.querySelector('#ln-calc-import').value = '';
+    body.querySelector('#ln-calc-bloc').style.display = 'none';
   });
 
   body.querySelector('#form-linia').addEventListener('submit', (e) => altaLinia(e, body, f.id));
@@ -521,6 +556,7 @@ async function desarCapcalera(body, facturaId) {
     data_venciment: body.querySelector('#m-data-venciment').value || null,
     forma_pagament: formaPagament,
     compte_bancari_id: formaPagament === 'compte_bancari' ? (body.querySelector('#m-compte-bancari').value || null) : null,
+    metode_pagament_compte: formaPagament === 'compte_bancari' ? (body.querySelector('#m-metode-pagament-compte').value || null) : null,
     soci_id: formaPagament === 'soci' ? (body.querySelector('#m-soci').value || null) : null,
     estat: body.querySelector('#m-estat').value,
     irpf_pct: body.querySelector('#m-irpf-pct').value ? Number(body.querySelector('#m-irpf-pct').value) : null,
@@ -580,7 +616,8 @@ function pintarLinies(body, facturaId, linies) {
       <div>
         <span>${l.categoria?.grup ?? '—'} · ${l.categoria?.nom ?? '—'}</span>
         ${l.descripcio ? ` — ${l.descripcio}` : ''}
-        <span style="color:var(--gaco-text-secondary);"> · ${l.quantitat ?? 1} × ${formatImport(l.preu_unitari)}</span>
+        <span style="color:var(--gaco-text-secondary);"> · ${l.quantitat ?? 1} × ${formatPreuUnitari(l.preu_unitari)}</span>
+        ${l.descompte_pct ? `<span style="color:var(--gaco-text-secondary);"> · Desc. ${l.descompte_pct}% (-${formatImport(l.import_descompte)})</span>` : ''}
         ${l.categoria?.tipus === 'suplits' ? `<span style="color:var(--gaco-accent);"> · suplit${l.proveidor_suplit?.nom ? ` (${l.proveidor_suplit.nom})` : ''}</span>` : ''}
         ${l.immobilitzat?.nom ? `<span style="color:var(--gaco-accent);"> · ${l.immobilitzat.nom}</span>` : ''}
       </div>
@@ -601,7 +638,8 @@ function pintarLinies(body, facturaId, linies) {
 async function altaLinia(e, body, facturaId) {
   e.preventDefault();
 
-  const categoriaId = body.querySelector('#ln-categoria').value;
+  const categoriaSelect = body.querySelector('#ln-categoria');
+  const categoriaId = categoriaSelect.value;
   const categoria = conceptesCache.find((c) => c.id === categoriaId);
   const quantitat = Number(body.querySelector('#ln-quantitat').value) || 1;
   const preuUnitari = Number(body.querySelector('#ln-preu').value) || 0;
@@ -635,10 +673,23 @@ async function altaLinia(e, body, facturaId) {
   const { error } = await supabase.from('gaco_detall_factures_rebudes').insert(novaLinia);
   if (error) return alert(`Error afegint línia: ${error.message}`);
 
-  e.target.reset();
+  // Reinicia els camps de la línia PERÒ manté el concepte seleccionat — sovint
+  // s'afegeixen diverses línies seguides del mateix concepte (p.ex. varies
+  // nòmines "Serveis professionals - Laboral" una darrere l'altra).
+  body.querySelector('#ln-descripcio').value = '';
   body.querySelector('#ln-quantitat').value = 1;
-  body.querySelector('#ln-iva-pct').value = 21;
+  body.querySelector('#ln-preu').value = '';
+  body.querySelector('#ln-descompte-pct').value = '';
+  body.querySelector('#ln-iva-pct').value = ivaPct || 21;
+  // Els selectors de suplit/immobilitzat sí que es netegen (no volem
+  // arrossegar per error el mateix immobilitzat/proveïdor a la línia següent)
+  const selectSuplit = body.querySelector('#ln-proveidor-suplit');
+  const selectImmobilitzat = body.querySelector('#ln-immobilitzat');
+  if (selectSuplit) selectSuplit.value = '';
+  if (selectImmobilitzat) selectImmobilitzat.value = '';
+
   await carregarLinies(body, facturaId);
+  body.querySelector('#ln-preu').focus();
 }
 
 async function eliminarLinia(liniaId, body, facturaId) {
