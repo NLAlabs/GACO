@@ -1013,10 +1013,11 @@ let jsPdfCarregat = false;
 
 async function carregarJsPdf() {
   if (jsPdfCarregat) return;
-  await Promise.all([
-    carregarScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'),
-    carregarScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'),
-  ]);
+  // IMPORTANT: en sèrie, no amb Promise.all — el plugin autotable necessita
+  // que window.jspdf ja existeixi quan s'executa, si no s'enganxa a res i
+  // doc.autoTable queda undefined sense cap error visible.
+  await carregarScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+  await carregarScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
   jsPdfCarregat = true;
 }
 
@@ -1033,8 +1034,17 @@ function carregarScript(src) {
 
 async function exportarPdf() {
   if (resultatActual.length === 0) return alert('No hi ha resultats per exportar.');
-  await carregarJsPdf();
 
+  try {
+    await carregarJsPdf();
+    generarPdf();
+  } catch (err) {
+    console.error('Error generant el PDF:', err);
+    alert(`No s'ha pogut generar el PDF: ${err.message ?? err}`);
+  }
+}
+
+function generarPdf() {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
 
