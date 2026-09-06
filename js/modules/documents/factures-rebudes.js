@@ -443,25 +443,36 @@ function htmlSeccioB() {
         <p id="totals-linies" style="margin:0; font-size:12px; font-weight:500; color:var(--gaco-accent);"></p>
       </div>
       <div id="llista-linies" style="margin-bottom:12px;"></div>
-      <form id="form-linia" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
-        ${camp('Concepte', `<select id="ln-categoria" required style="min-width:200px;"><option value="">Selecciona...</option>${conceptesCache.map((c) => `<option value="${c.id}" data-tipus="${c.tipus}">${c.grup} · ${c.nom}</option>`).join('')}</select>`)}
-        ${camp('Descripció', `<input type="text" id="ln-descripcio" style="min-width:160px;" />`)}
-        ${camp('Quantitat', `<input type="number" step="0.01" id="ln-quantitat" value="1" style="width:90px;" />`)}
-        ${camp('Preu unitari (€)', `<input type="number" step="0.000001" id="ln-preu" required style="width:130px;" />`)}
-        <button type="button" id="ln-calc-toggle" style="align-self:flex-end; font-size:12px;" title="Calcular el preu unitari a partir de l'import total de la línia (útil quan la factura dona base imposable però no preu/unitat)">
-          🧮 Calcula preu
-        </button>
-        ${camp('% descompte', `<input type="number" step="0.01" id="ln-descompte-pct" style="width:90px;" />`)}
-        ${camp('% IVA', `<input type="number" step="0.01" id="ln-iva-pct" value="21" style="width:90px;" />`)}
-        <div id="ln-bloc-suplit" style="display:none;">
-          ${camp('Proveïdor del suplit', `<select id="ln-proveidor-suplit" style="min-width:160px;"><option value="">Selecciona...</option>${proveidorsCache.map((p) => `<option value="${p.id}">${p.nom}</option>`).join('')}</select>`)}
+      <form id="form-linia">
+        <!-- Fila 1: concepte + descripció — necessiten amplada real (textos llargs en reparacions, etc.) -->
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+          <div style="flex:1; min-width:220px;">
+            ${camp('Concepte', `<select id="ln-categoria" required style="width:100%;"><option value="">Selecciona...</option>${conceptesCache.map((c) => `<option value="${c.id}" data-tipus="${c.tipus}">${c.grup} · ${c.nom}</option>`).join('')}</select>`)}
+          </div>
+          <div style="flex:2; min-width:300px;">
+            ${camp('Descripció', `<input type="text" id="ln-descripcio" maxlength="300" style="width:100%;" />`)}
+          </div>
         </div>
-        <div id="ln-bloc-immobilitzat" style="display:none;">
-          ${camp('Immobilitzat', `<select id="ln-immobilitzat" style="min-width:160px;"><option value="">Selecciona...</option>${immobilitzatCache.map((m) => `<option value="${m.id}">${m.nom}</option>`).join('')}</select>`)}
-        </div>
-        <button type="submit">Afegir línia</button>
 
-        <div id="ln-calc-bloc" style="display:none; gap:6px; align-items:flex-end; width:100%; padding-top:8px; border-top:1px dashed var(--gaco-border);">
+        <!-- Fila 2: imports i quantitats — valors curts, no necessiten amplada -->
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:8px;">
+          ${camp('Quantitat', `<input type="number" step="0.01" id="ln-quantitat" value="1" style="width:90px;" />`)}
+          ${camp('Preu unitari (€)', `<input type="number" step="0.000001" id="ln-preu" required style="width:130px;" />`)}
+          <button type="button" id="ln-calc-toggle" style="align-self:flex-end; font-size:12px;" title="Calcular el preu unitari a partir de l'import total de la línia (útil quan la factura dona base imposable però no preu/unitat)">
+            🧮 Calcula preu
+          </button>
+          ${camp('% descompte', `<input type="number" step="0.01" id="ln-descompte-pct" style="width:90px;" />`)}
+          ${camp('% IVA', `<input type="number" step="0.01" id="ln-iva-pct" value="21" style="width:90px;" />`)}
+          <div id="ln-bloc-suplit" style="display:none;">
+            ${camp('Proveïdor del suplit', `<select id="ln-proveidor-suplit" style="min-width:160px;"><option value="">Selecciona...</option>${proveidorsCache.map((p) => `<option value="${p.id}">${p.nom}</option>`).join('')}</select>`)}
+          </div>
+          <div id="ln-bloc-immobilitzat" style="display:none;">
+            ${camp('Immobilitzat', `<select id="ln-immobilitzat" style="min-width:160px;"><option value="">Selecciona...</option>${immobilitzatCache.map((m) => `<option value="${m.id}">${m.nom}</option>`).join('')}</select>`)}
+          </div>
+          <button type="submit">Afegir línia</button>
+        </div>
+
+        <div id="ln-calc-bloc" style="display:none; gap:6px; align-items:flex-end; padding-top:8px; border-top:1px dashed var(--gaco-border);">
           ${camp('Import de la línia sense IVA (€)', `<input type="number" step="0.01" id="ln-calc-import" style="width:150px;" placeholder="p.ex. base imposable del gasoil" />`)}
           <button type="button" id="ln-calc-aplicar">Aplica → preu unitari</button>
           <p style="margin:0; font-size:11px; color:var(--gaco-text-secondary);">Es divideix per la quantitat indicada a dalt.</p>
