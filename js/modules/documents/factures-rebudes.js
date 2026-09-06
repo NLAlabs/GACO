@@ -8,10 +8,12 @@ import { openModal, closeModal } from '../../lib/modal.js';
  * modal, seguint l'ordre de lectura natural d'una factura:
  *   A — Dades de la factura
  *   B — Línies + totals calculats
- *   C — Venciment i forma de pagament (al final, com a Access)
+ *   C — Venciment i forma de pagament
+ *   D — Adjunts (Supabase Storage) i Pagaments manuals
  *
- * Pendent per a la propera iteració: adjunts (gaco_adjunts_factures_rebudes)
- * i pagaments (gaco_pagaments_factures_rebudes) — probablement un bloc D.
+ * El registre normal de pagaments serà via Conciliació bancària (pendent
+ * de connectar-hi factures). El formulari manual d'aquí és per a casos
+ * sense N43 encara (efectiu, confirmacions per endavant, errors assumits).
  *
  * Exercici: es filtra SEMPRE per l'any en curs per defecte (lliçó de SAO —
  * mai llista sense filtrar per exercici), amb opció explícita "Tots".
@@ -21,11 +23,13 @@ import { openModal, closeModal } from '../../lib/modal.js';
  * emeses, pendent de fer), no pagar als nostres propis proveïdors.
  *
  * metode_pagament_compte: només rellevant quan forma_pagament='compte_bancari'
- * (domiciliacio|transferencia|targeta) — requereix l'ALTER TABLE corresponent.
+ * (domiciliacio|transferencia|targeta).
  *
- * preu_unitari: la columna real és numeric(12,6) (ampliada des de (12,2) —
- * factures com el gasoil porten preu per litre amb 6 decimals, p.ex.
- * 0,929000 €/L). Cal l'ALTER TABLE corresponent abans de fer servir això.
+ * preu_unitari: numeric(12,6) — factures com el gasoil porten preu/litre
+ * amb 6 decimals (p.ex. 0,929000 €/L).
+ *
+ * Adjunts: requereixen el bucket privat 'gaco-adjunts' a Supabase Storage
+ * (veure ALTER/INSERT de storage.buckets acordat abans d'aquest fitxer).
  */
 
 const TIPUS_FACTURA = ['factura', 'despesa'];
@@ -33,6 +37,11 @@ const ESTATS = ['pendent', 'pagada_parcial', 'pagada', 'pendent_liquidar_soci', 
 const FORMES_PAGAMENT = ['compte_bancari', 'soci', 'confirming', 'compensacio'];
 const METODES_PAGAMENT_COMPTE = ['domiciliacio', 'transferencia', 'targeta'];
 const ACTIVITATS = ['fruita_cereal', 'serveis', 'comuna'];
+const BUCKET_ADJUNTS = 'gaco-adjunts';
+
+// Estats que representen el circuit de liquidació amb un soci — el
+// recàlcul automàtic de pagaments NO els toca (és un flux a part).
+const ESTATS_SOCI = ['pendent_liquidar_soci', 'liquidada_soci'];
 
 const ETIQUETES_ESTAT = {
   pendent: 'Pendent',
@@ -336,7 +345,7 @@ function obrirModalNovaFactura() {
         Crear factura i continuar
       </button>
       <p style="font-size:12px; color:var(--gaco-text-secondary); margin-top:8px;">
-        Un cop creada podràs afegir-hi línies, venciment i forma de pagament.
+        Un cop creada podràs afegir-hi línies, venciment, adjunts i pagaments.
       </p>
     `,
     onMount: (body) => {
@@ -375,7 +384,7 @@ async function crearFacturaDesDeModal(body) {
 }
 
 // -----------------------------------------------------------------------
-// Modal — Veure/Editar factura completa (A + B línies + C venciment/pagament)
+// Modal — Veure/Editar factura completa (A + B línies + C venciment/pagament + D adjunts/pagaments)
 // -----------------------------------------------------------------------
 
 async function obrirModalFactura(id) {
@@ -397,6 +406,7 @@ async function obrirModalFactura(id) {
       <button type="button" id="btn-desar-factura" style="background:var(--gaco-accent); color:#fff; border:none; border-radius:var(--gaco-radius); padding:8px 14px; cursor:pointer;">
         Desar canvis
       </button>
+      ${htmlSeccioD()}
     `,
     onMount: (body) => vincularModalFactura(body, f),
   });
@@ -504,11 +514,45 @@ function htmlSeccioC(f) {
         ${camp('Estat', `<select id="m-estat" style="min-width:180px;">${ESTATS.map((e) => `<option value="${e}" ${(f?.estat ?? 'pendent') === e ? 'selected' : ''}>${ETIQUETES_ESTAT[e]}</option>`).join('')}</select>`)}
         ${camp('% IRPF', `<input type="number" step="0.01" id="m-irpf-pct" value="${f?.irpf_pct ?? ''}" style="width:100px;" />`)}
         ${camp('Import IRPF (€)', `<input type="number" step="0.01" id="m-irpf" value="${f?.irpf ?? ''}" style="width:120px;" />`)}
-        <p style="margin:0; font-size:13px; color:var(--gaco-text-secondary); align-self:center;">
+        <p id="resum-pagament" style="margin:0; font-size:13px; color:var(--gaco-text-secondary); align-self:center;">
           Pagat: ${formatImport(f?.import_pagat)} · Pendent: ${formatImport(f?.import_pendent)}
         </p>
       </div>
       ${camp('Notes', `<textarea id="m-notes" style="width:100%; min-height:50px;">${f?.notes ?? ''}</textarea>`)}
+    </div>
+  `;
+}
+
+function htmlSeccioD() {
+  return `
+    <div class="modal-section">
+      <p class="modal-section-title">D · Adjunts</p>
+      <div id="llista-adjunts" style="margin-bottom:10px;"></div>
+      <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+        ${camp('Fitxer (foto/escaneig)', `<input type="file" id="adj-fitxer" accept="image/*,application/pdf" />`)}
+        ${camp('Tipus', `<select id="adj-tipus"><option value="propia">Factura pròpia</option><option value="suplit">Suplit</option></select>`)}
+        <div id="adj-bloc-proveidor" style="display:none;">
+          ${camp('Proveïdor del suplit', `<select id="adj-proveidor-relacionat"><option value="">Selecciona...</option>${proveidorsCache.map((p) => `<option value="${p.id}">${p.nom}</option>`).join('')}</select>`)}
+        </div>
+        ${camp('Descripció (opcional)', `<input type="text" id="adj-descripcio" style="min-width:160px;" />`)}
+        <button type="button" id="adj-pujar">Pujar</button>
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <p class="modal-section-title">E · Pagaments</p>
+      <p style="font-size:12px; color:var(--gaco-text-secondary); margin:-6px 0 10px;">
+        El registre normal serà via Conciliació bancària. Fes servir això només per a pagaments sense N43 encara (efectiu, avançaments...).
+      </p>
+      <div id="llista-pagaments" style="margin-bottom:10px;"></div>
+      <form id="form-pagament" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+        ${camp('Data pagament', `<input type="date" id="pg-data" required />`)}
+        ${camp('Import (€)', `<input type="number" step="0.01" id="pg-import" required style="width:120px;" />`)}
+        ${camp('Tipus', `<select id="pg-tipus"><option value="pagament">Pagament</option><option value="devolucio">Devolució</option></select>`)}
+        ${camp('Compte (opcional)', `<select id="pg-compte"><option value="">Selecciona...</option>${comptesCache.map((c) => `<option value="${c.id}">${c.entitatNom} · ${c.descripcio ?? c.num_compte}</option>`).join('')}</select>`)}
+        ${camp('Notes', `<input type="text" id="pg-notes" style="min-width:160px;" />`)}
+        <button type="submit">Registrar pagament</button>
+      </form>
     </div>
   `;
 }
@@ -546,7 +590,18 @@ function vincularModalFactura(body, f) {
   body.querySelector('#form-linia').addEventListener('submit', (e) => altaLinia(e, body, f.id));
   body.querySelector('#btn-desar-factura').addEventListener('click', () => desarCapcalera(body, f.id));
 
+  // Adjunts
+  body.querySelector('#adj-tipus').addEventListener('change', (e) => {
+    body.querySelector('#adj-bloc-proveidor').style.display = e.target.value === 'suplit' ? 'block' : 'none';
+  });
+  body.querySelector('#adj-pujar').addEventListener('click', () => pujarAdjunt(body, f.id));
+
+  // Pagaments
+  body.querySelector('#form-pagament').addEventListener('submit', (e) => altaPagament(e, body, f.id));
+
   carregarLinies(body, f.id);
+  carregarAdjunts(body, f.id);
+  carregarPagaments(body, f.id);
 }
 
 async function desarCapcalera(body, facturaId) {
@@ -578,7 +633,6 @@ async function desarCapcalera(body, facturaId) {
   const { error } = await supabase.from('gaco_factures_rebudes').update(actualitzat).eq('id', facturaId);
   if (error) return alert(`Error desant: ${error.message}`);
 
-  // Recalcular el total per si l'IRPF ha canviat (base/iva/suplits ja estan al dia per les línies)
   const { data: linies } = await supabase
     .from('gaco_detall_factures_rebudes')
     .select('*, categoria:gaco_conceptes_comptables(tipus)')
@@ -660,7 +714,6 @@ async function altaLinia(e, body, facturaId) {
   const importBase = quantitat * preuUnitari;
   const importDescompte = importBase * (descomptePct / 100);
   const totalLinia = importBase - importDescompte;
-  // Suplits: import passat íntegre (ja porta el seu propi IVA de qui l'ha avançat), no en calculem IVA propi
   const iva = categoria?.tipus === 'suplits' ? 0 : totalLinia * (ivaPct / 100);
 
   if (!categoriaId) return alert('Cal triar un concepte.');
@@ -684,16 +737,11 @@ async function altaLinia(e, body, facturaId) {
   const { error } = await supabase.from('gaco_detall_factures_rebudes').insert(novaLinia);
   if (error) return alert(`Error afegint línia: ${error.message}`);
 
-  // Reinicia els camps de la línia PERÒ manté el concepte seleccionat — sovint
-  // s'afegeixen diverses línies seguides del mateix concepte (p.ex. varies
-  // nòmines "Serveis professionals - Laboral" una darrere l'altra).
   body.querySelector('#ln-descripcio').value = '';
   body.querySelector('#ln-quantitat').value = 1;
   body.querySelector('#ln-preu').value = '';
   body.querySelector('#ln-descompte-pct').value = '';
   body.querySelector('#ln-iva-pct').value = ivaPct || 21;
-  // Els selectors de suplit/immobilitzat sí que es netegen (no volem
-  // arrossegar per error el mateix immobilitzat/proveïdor a la línia següent)
   const selectSuplit = body.querySelector('#ln-proveidor-suplit');
   const selectImmobilitzat = body.querySelector('#ln-immobilitzat');
   if (selectSuplit) selectSuplit.value = '';
@@ -745,6 +793,216 @@ async function recalcularCapcalera(facturaId, linies) {
     .eq('id', facturaId);
 
   if (error) console.error('Error actualitzant totals de capçalera:', error);
+
+  const resumEl = document.getElementById('resum-pagament');
+  if (resumEl) resumEl.textContent = `Pagat: ${formatImport(importPagat)} · Pendent: ${formatImport(importPendent)}`;
+}
+
+// -----------------------------------------------------------------------
+// Adjunts (gaco_adjunts_factures_rebudes + Supabase Storage 'gaco-adjunts')
+// -----------------------------------------------------------------------
+
+async function carregarAdjunts(body, facturaId) {
+  const contenidor = body.querySelector('#llista-adjunts');
+  contenidor.innerHTML = '<p>Carregant adjunts...</p>';
+
+  const { data, error } = await supabase
+    .from('gaco_adjunts_factures_rebudes')
+    .select('*, proveidor_relacionat:gaco_proveidors(nom)')
+    .eq('factura_id', facturaId)
+    .order('created_at');
+
+  if (error) {
+    contenidor.innerHTML = `<p class="error">Error carregant adjunts: ${error.message}</p>`;
+    return;
+  }
+
+  if (!data || data.length === 0) {
+    contenidor.innerHTML = '<p style="color:var(--gaco-text-secondary); font-size:13px;">Cap adjunt encara.</p>';
+    return;
+  }
+
+  const adjuntsAmbUrl = await Promise.all(
+    data.map(async (a) => {
+      const { data: signat } = await supabase.storage.from(BUCKET_ADJUNTS).createSignedUrl(a.fitxer_url, 3600);
+      return { ...a, urlSignada: signat?.signedUrl ?? null };
+    })
+  );
+
+  contenidor.innerHTML = adjuntsAmbUrl
+    .map(
+      (a) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:0.5px solid var(--gaco-border); font-size:13px;">
+      <div>
+        ${a.urlSignada ? `<a href="${a.urlSignada}" target="_blank" rel="noopener">` : ''}
+          ${a.tipus === 'suplit' ? 'Suplit' : 'Factura pròpia'}${a.proveidor_relacionat?.nom ? ` (${a.proveidor_relacionat.nom})` : ''}
+        ${a.urlSignada ? '</a>' : ' (URL no disponible)'}
+        ${a.descripcio ? ` — ${a.descripcio}` : ''}
+      </div>
+      <button data-eliminar-adjunt="${a.id}" data-path="${a.fitxer_url}" title="Eliminar adjunt">✕</button>
+    </div>
+  `
+    )
+    .join('');
+
+  contenidor.querySelectorAll('[data-eliminar-adjunt]').forEach((btn) => {
+    btn.addEventListener('click', () => eliminarAdjunt(btn.dataset.eliminarAdjunt, btn.dataset.path, body, facturaId));
+  });
+}
+
+async function pujarAdjunt(body, facturaId) {
+  const fileInput = body.querySelector('#adj-fitxer');
+  const file = fileInput.files[0];
+  if (!file) return alert('Selecciona un fitxer primer.');
+
+  const tipus = body.querySelector('#adj-tipus').value;
+  const proveidorRelacionatId = tipus === 'suplit' ? (body.querySelector('#adj-proveidor-relacionat').value || null) : null;
+  const descripcio = body.querySelector('#adj-descripcio').value.trim() || null;
+
+  const path = `${facturaId}/${Date.now()}-${file.name}`;
+  const { error: errorPujada } = await supabase.storage.from(BUCKET_ADJUNTS).upload(path, file);
+  if (errorPujada) return alert(`Error pujant el fitxer: ${errorPujada.message}`);
+
+  const { error } = await supabase.from('gaco_adjunts_factures_rebudes').insert({
+    factura_id: facturaId,
+    tipus,
+    proveidor_relacionat_id: proveidorRelacionatId,
+    fitxer_url: path,
+    descripcio,
+  });
+  if (error) return alert(`Error desant la referència de l'adjunt: ${error.message}`);
+
+  fileInput.value = '';
+  body.querySelector('#adj-descripcio').value = '';
+  await carregarAdjunts(body, facturaId);
+}
+
+async function eliminarAdjunt(adjuntId, path, body, facturaId) {
+  if (!confirm('Eliminar aquest adjunt?')) return;
+  await supabase.storage.from(BUCKET_ADJUNTS).remove([path]);
+  const { error } = await supabase.from('gaco_adjunts_factures_rebudes').delete().eq('id', adjuntId);
+  if (error) return alert(`Error eliminant l'adjunt: ${error.message}`);
+  await carregarAdjunts(body, facturaId);
+}
+
+// -----------------------------------------------------------------------
+// Pagaments manuals (gaco_pagaments_factures_rebudes)
+// -----------------------------------------------------------------------
+
+async function carregarPagaments(body, facturaId) {
+  const contenidor = body.querySelector('#llista-pagaments');
+  contenidor.innerHTML = '<p>Carregant pagaments...</p>';
+
+  const { data, error } = await supabase
+    .from('gaco_pagaments_factures_rebudes')
+    .select('*, compte:gaco_comptes(descripcio, num_compte)')
+    .eq('factura_id', facturaId)
+    .order('data_pagament');
+
+  if (error) {
+    contenidor.innerHTML = `<p class="error">Error carregant pagaments: ${error.message}</p>`;
+    return;
+  }
+
+  if (!data || data.length === 0) {
+    contenidor.innerHTML = '<p style="color:var(--gaco-text-secondary); font-size:13px;">Cap pagament registrat encara.</p>';
+  } else {
+    contenidor.innerHTML = data
+      .map(
+        (p) => `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:0.5px solid var(--gaco-border); font-size:13px;">
+        <div>
+          ${formatData(p.data_pagament)} · ${p.tipus_moviment === 'devolucio' ? 'Devolució' : 'Pagament'}
+          ${p.compte ? ` · ${p.compte.descripcio ?? p.compte.num_compte}` : ' · manual'}
+          ${p.notes ? ` — ${p.notes}` : ''}
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span>${formatImport(p.import)}</span>
+          <button data-eliminar-pagament="${p.id}" title="Eliminar pagament">✕</button>
+        </div>
+      </div>
+    `
+      )
+      .join('');
+
+    contenidor.querySelectorAll('[data-eliminar-pagament]').forEach((btn) => {
+      btn.addEventListener('click', () => eliminarPagament(btn.dataset.eliminarPagament, body, facturaId));
+    });
+  }
+
+  await recalcularPagamentsCapcalera(facturaId);
+}
+
+async function altaPagament(e, body, facturaId) {
+  e.preventDefault();
+
+  const dataPagament = body.querySelector('#pg-data').value;
+  const importIntroduit = Number(body.querySelector('#pg-import').value) || 0;
+  const tipusMoviment = body.querySelector('#pg-tipus').value;
+  const compteId = body.querySelector('#pg-compte').value || null;
+  const notes = body.querySelector('#pg-notes').value.trim() || null;
+
+  if (!dataPagament || !importIntroduit) return alert('Cal indicar data i import.');
+
+  const importAmbSigne = tipusMoviment === 'devolucio' ? -Math.abs(importIntroduit) : Math.abs(importIntroduit);
+
+  const { error } = await supabase.from('gaco_pagaments_factures_rebudes').insert({
+    factura_id: facturaId,
+    data_pagament: dataPagament,
+    import: importAmbSigne,
+    tipus_moviment: tipusMoviment,
+    compte_bancari_id: compteId,
+    notes,
+  });
+  if (error) return alert(`Error registrant el pagament: ${error.message}`);
+
+  e.target.reset();
+  await carregarPagaments(body, facturaId);
+}
+
+async function eliminarPagament(pagamentId, body, facturaId) {
+  if (!confirm('Eliminar aquest pagament?')) return;
+  const { error } = await supabase.from('gaco_pagaments_factures_rebudes').delete().eq('id', pagamentId);
+  if (error) return alert(`Error eliminant el pagament: ${error.message}`);
+  await carregarPagaments(body, facturaId);
+}
+
+async function recalcularPagamentsCapcalera(facturaId) {
+  const { data: pagaments } = await supabase
+    .from('gaco_pagaments_factures_rebudes')
+    .select('import')
+    .eq('factura_id', facturaId);
+
+  const importPagat = (pagaments ?? []).reduce((acc, p) => acc + (Number(p.import) || 0), 0);
+
+  const { data: capcalera } = await supabase
+    .from('gaco_factures_rebudes')
+    .select('total, estat')
+    .eq('id', facturaId)
+    .single();
+
+  const total = Number(capcalera?.total) || 0;
+  const importPendent = total - importPagat;
+
+  let nouEstat = capcalera?.estat;
+  if (!ESTATS_SOCI.includes(capcalera?.estat)) {
+    if (total > 0 && importPendent <= 0) nouEstat = 'pagada';
+    else if (importPagat > 0) nouEstat = 'pagada_parcial';
+    else nouEstat = 'pendent';
+  }
+
+  const { error } = await supabase
+    .from('gaco_factures_rebudes')
+    .update({ import_pagat: importPagat, import_pendent: importPendent, estat: nouEstat })
+    .eq('id', facturaId);
+
+  if (error) console.error('Error actualitzant pagaments de capçalera:', error);
+
+  const resumEl = document.getElementById('resum-pagament');
+  if (resumEl) resumEl.textContent = `Pagat: ${formatImport(importPagat)} · Pendent: ${formatImport(importPendent)}`;
+
+  const estatSelect = document.getElementById('m-estat');
+  if (estatSelect && nouEstat) estatSelect.value = nouEstat;
 }
 
 // -----------------------------------------------------------------------
