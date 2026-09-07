@@ -733,7 +733,7 @@ async function recalcularCapcalera(facturaId, linies, fonsAdversitatOverride) {
     .eq('id', facturaId)
     .single();
 
-  const fonsAdversitat = fonsAdversitatOverride ?? Number(capcalera?.import_fons_adversitat) || 0;
+  const fonsAdversitat = fonsAdversitatOverride ?? (Number(capcalera?.import_fons_adversitat) || 0);
   const total = baseImposable - fonsAdversitat + iva;
   const importCobrat = Number(capcalera?.import_cobrat) || 0;
   const importPendent = total - importCobrat;
