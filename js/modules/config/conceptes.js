@@ -2,19 +2,21 @@ import { supabase } from '../../lib/supabaseClient.js';
 
 /**
  * Configuració i gestió → Conceptes.
- * Dues vies d'alta: formulari ràpid (un concepte puntual) i importació
- * massiva enganxant CSV (per als ~73 conceptes ja treballats per Josep,
- * veure document conceptual original, secció 3).
+ * Alta ràpida + Veure/Editar (nom, codi PGC, tipus, classificació ampliada)
+ * + importació massiva per CSV (operació puntual inicial, plegada per
+ * defecte — ja no és una tasca del dia a dia).
  *
- * Format CSV esperat, un concepte per línia, separat per punt i coma:
- *   grup;nom;codi;classificacio;tipus
- * codi i classificacio poden anar buits. tipus ha de ser
- * despesa|ingres|actiu (per defecte 'despesa' si es deixa buit).
+ * `grup` NO és editable des d'aquí a propòsit: és el nivell d'agregació
+ * que s'ha de mantenir estable a llarg termini (veure comentari original
+ * a gaco_conceptes_comptables.grup). Si mai cal canviar-lo, és una decisió
+ * conscient per SQL directe, no un camp més del formulari.
  *
  * "Eliminar" = actiu=false (mateix criteri que la resta de mestres).
  */
 
 const TIPUS_CONCEPTE = ['despesa', 'ingres', 'actiu', 'suplits'];
+
+let tots = []; // cache local per a Veure/Editar sense tornar a consultar
 
 export async function render() {
   const contenidor = document.getElementById('app-content');
@@ -30,6 +32,8 @@ export async function render() {
     contenidor.innerHTML = `<p class="error">Error carregant conceptes: ${error.message}</p>`;
     return;
   }
+
+  tots = conceptes;
 
   // Agrupar per `grup` per fer la llista llegible amb 73 files
   const grups = {};
@@ -53,18 +57,21 @@ export async function render() {
     </div>
 
     <div class="card">
-      <p style="font-weight:500; margin-bottom:12px;">Importació massiva (CSV)</p>
-      <p style="font-size:13px; color:var(--gaco-text-secondary); margin-bottom:8px;">
-        Una línia per concepte, camps separats per punt i coma: <code>grup;nom;codi;classificacio;tipus</code>.
-        Codi i classificació poden anar buits. Si tipus es deixa buit, s'assigna "despesa".
-      </p>
-      <textarea id="csv-conceptes" placeholder="CARBURANTS;CARBURANTS - AdBlue;;;despesa
+      <button type="button" id="toggle-import-csv" style="margin-bottom:0;">Importació massiva (CSV) ▾</button>
+      <div id="bloc-import-csv" style="display:none; margin-top:12px;">
+        <p style="font-size:13px; color:var(--gaco-text-secondary); margin-bottom:8px;">
+          Una línia per concepte, camps separats per punt i coma: <code>grup;nom;codi;classificacio;tipus</code>.
+          Codi i classificació poden anar buits. Si tipus es deixa buit, s'assigna "despesa".
+          Pensat per a càrregues inicials puntuals, no per a l'ús habitual.
+        </p>
+        <textarea id="csv-conceptes" placeholder="CARBURANTS;CARBURANTS - AdBlue;;;despesa
 SOUS I SALARIS;SOUS I SALARIS-Geni;;;despesa" style="width:100%; min-height:100px; font-family:monospace; font-size:12px;"></textarea>
-      <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
-        <button type="button" id="btn-previsualitzar">Previsualitzar</button>
-        <span id="resultat-import" style="font-size:13px;"></span>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+          <button type="button" id="btn-previsualitzar">Previsualitzar</button>
+          <span id="resultat-import" style="font-size:13px;"></span>
+        </div>
+        <div id="previsualitzacio"></div>
       </div>
-      <div id="previsualitzacio"></div>
     </div>
 
     <div class="card">
@@ -77,9 +84,15 @@ SOUS I SALARIS;SOUS I SALARIS-Geni;;;despesa" style="width:100%; min-height:100p
           ${items
             .map(
               (c) => `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:0.5px solid var(--gaco-border);">
-              <span style="${c.actiu ? '' : 'color:var(--gaco-text-secondary); text-decoration:line-through;'}">${c.nom} <span style="font-size:11px; color:var(--gaco-text-secondary);">(${c.tipus})</span></span>
-              <button data-toggle-concepte="${c.id}" data-actiu="${c.actiu}">${c.actiu ? 'Desactivar' : 'Reactivar'}</button>
+            <div>
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:0.5px solid var(--gaco-border);">
+                <span style="${c.actiu ? '' : 'color:var(--gaco-text-secondary); text-decoration:line-through;'}">${c.nom} <span style="font-size:11px; color:var(--gaco-text-secondary);">(${c.tipus}${c.codi ? ` · ${c.codi}` : ''})</span></span>
+                <div style="display:flex; gap:6px;">
+                  <button data-veure="${c.id}">Veure/Editar</button>
+                  <button data-toggle-concepte="${c.id}" data-actiu="${c.actiu}">${c.actiu ? 'Desactivar' : 'Reactivar'}</button>
+                </div>
+              </div>
+              <div id="edit-concepte-${c.id}" style="display:none; margin:6px 0 10px; padding:10px; background:var(--gaco-bg); border-radius:var(--gaco-radius);"></div>
             </div>
           `
             )
@@ -90,6 +103,11 @@ SOUS I SALARIS;SOUS I SALARIS-Geni;;;despesa" style="width:100%; min-height:100p
         .join('')}
     </div>
   `;
+
+  document.getElementById('toggle-import-csv').addEventListener('click', () => {
+    const bloc = document.getElementById('bloc-import-csv');
+    bloc.style.display = bloc.style.display === 'none' ? 'block' : 'none';
+  });
 
   document.getElementById('form-concepte').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -116,6 +134,10 @@ SOUS I SALARIS;SOUS I SALARIS-Geni;;;despesa" style="width:100%; min-height:100p
       if (error) return alert(`Error: ${error.message}`);
       render();
     });
+  });
+
+  document.querySelectorAll('[data-veure]').forEach((btn) => {
+    btn.addEventListener('click', () => obrirEdicio(btn.dataset.veure));
   });
 
   document.getElementById('btn-previsualitzar').addEventListener('click', () => {
@@ -146,6 +168,46 @@ SOUS I SALARIS;SOUS I SALARIS-Geni;;;despesa" style="width:100%; min-height:100p
         render();
       });
     }
+  });
+}
+
+function obrirEdicio(id) {
+  const concepte = tots.find((c) => c.id === id);
+  const bloc = document.getElementById(`edit-concepte-${id}`);
+  const esVisible = bloc.style.display !== 'none';
+
+  document.querySelectorAll('[id^="edit-concepte-"]').forEach((el) => (el.style.display = 'none'));
+  if (esVisible) return;
+
+  bloc.style.display = 'block';
+  bloc.innerHTML = `
+    <p style="font-size:11px; color:var(--gaco-text-secondary); margin:0 0 8px;">
+      Grup: <strong>${concepte.grup}</strong> (no editable aquí — es manté estable a llarg termini)
+    </p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+      <input type="text" id="ed-nom-${id}" placeholder="Nom" value="${concepte.nom ?? ''}" style="flex:2; min-width:200px;" />
+      <input type="text" id="ed-codi-${id}" placeholder="Codi PGC" value="${concepte.codi ?? ''}" style="width:120px;" />
+      <select id="ed-tipus-${id}" style="width:130px;">
+        ${TIPUS_CONCEPTE.map((t) => `<option value="${t}" ${concepte.tipus === t ? 'selected' : ''}>${t}</option>`).join('')}
+      </select>
+    </div>
+    <input type="text" id="ed-classificacio-${id}" placeholder="Classificació ampliada" value="${concepte.classificacio ?? ''}" style="width:100%; margin-bottom:8px;" />
+    <button data-desar="${id}">Desar canvis</button>
+  `;
+
+  bloc.querySelector(`[data-desar="${id}"]`).addEventListener('click', async () => {
+    const nom = document.getElementById(`ed-nom-${id}`).value.trim();
+    if (!nom) return alert('El nom no pot quedar buit.');
+
+    const actualitzat = {
+      nom,
+      codi: document.getElementById(`ed-codi-${id}`).value.trim() || null,
+      tipus: document.getElementById(`ed-tipus-${id}`).value,
+      classificacio: document.getElementById(`ed-classificacio-${id}`).value.trim() || null,
+    };
+    const { error } = await supabase.from('gaco_conceptes_comptables').update(actualitzat).eq('id', id);
+    if (error) return alert(`Error desant: ${error.message}`);
+    render();
   });
 }
 
