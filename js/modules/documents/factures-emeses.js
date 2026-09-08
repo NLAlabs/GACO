@@ -427,7 +427,7 @@ async function obrirModalFactura(id) {
     wide: true,
     bodyHtml: `
       ${htmlSeccioA(f.tipus_document, f)}
-      ${teLinies ? htmlSeccioB() : `<div class="modal-section"><p class="modal-section-title">B · Productes</p><p style="font-size:13px; color:var(--gaco-text-secondary);">Bloc de productes (fruita/varietat/qualitat/calibre) pendent — propera iteració.</p></div>`}
+      ${teLinies ? htmlSeccioB() : htmlSeccioBProductes()}
       ${htmlSeccioC(f)}
       <button type="button" id="btn-desar-factura" style="background:var(--gaco-accent); color:#fff; border:none; border-radius:var(--gaco-radius); padding:8px 14px; cursor:pointer;">
         Desar canvis
@@ -500,6 +500,87 @@ function htmlSeccioB() {
   `;
 }
 
+// -----------------------------------------------------------------------
+// Bloc B alternatiu — Productes (bestreta_agraria / liquidacio_agraria)
+// Fruita: línies per qualitat/calibre amb categoria comercial/no_comercial.
+// Cereal: camps directes (kg, preu, %rend informatiu, despesa/kg, aportació
+// capital/kg) — fórmula confirmada amb factura real:
+//   import = kg_net × preu; BI = import − despesa_kg×kg_net;
+//   iva = BI×4%; bestreta = −(aportacio_capital_kg×kg_net) [DEDUCCIÓ];
+//   import_net = comercial+no_comercial+BI+iva+bestreta (unificat amb fruita)
+// -----------------------------------------------------------------------
+
+const TIPUS_CALCUL_PRODUCTE = ['fruita', 'cereal'];
+
+function htmlSeccioBProductes() {
+  return `
+    <div class="modal-section">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:4px;">
+        <p class="modal-section-title" style="margin:0;">B · Productes</p>
+        <p id="totals-productes" style="margin:0; font-size:12px; font-weight:500; color:var(--gaco-accent);"></p>
+      </div>
+      <div id="llista-productes" style="margin-bottom:12px;"></div>
+      <form id="form-producte">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:8px;">
+          ${camp('Fruita / Cereal', `<input type="text" id="pr-fruita" required placeholder="p.ex. Paraguaio, BLAT" style="min-width:160px;" />`)}
+          ${camp('Varietat', `<input type="text" id="pr-varietat" style="min-width:140px;" />`)}
+          ${camp('Codi producte (opcional)', `<input type="text" id="pr-codi" style="min-width:120px;" />`)}
+          ${camp('Tipus de càlcul', `<select id="pr-tipus-calcul">${TIPUS_CALCUL_PRODUCTE.map((t) => `<option value="${t}">${t}</option>`).join('')}</select>`)}
+          <button type="submit">Afegir producte</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function htmlDetallProducteFruita(p, tipusDocument) {
+  return `
+    <div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--gaco-border);">
+      ${
+        tipusDocument === 'liquidacio_agraria'
+          ? `<div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:8px;">
+              ${camp('Bestreta ja avançada (€)', `<input type="number" step="0.01" id="pr-bestreta-${p.id}" value="${p.import_bestreta ?? ''}" style="width:130px;" />`)}
+              <button type="button" data-desar-bestreta="${p.id}">Desar</button>
+            </div>`
+          : ''
+      }
+      <div id="llista-detall-producte-${p.id}" style="margin-bottom:10px;"></div>
+      <form id="form-detall-producte-${p.id}">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+          ${camp('Categoria', `<select id="dp-categoria-${p.id}"><option value="comercial">Comercial</option><option value="no_comercial">No comercial (anomalia)</option></select>`)}
+          ${camp('Qualitat / Anomalia', `<input type="text" id="dp-qualitat-${p.id}" placeholder="p.ex. PRIMERES o PODRIT" style="min-width:140px;" />`)}
+          ${camp('Calibre', `<input type="text" id="dp-calibre-${p.id}" style="width:100px;" />`)}
+          ${camp('Kg', `<input type="number" step="0.01" id="dp-kg-${p.id}" required style="width:100px;" />`)}
+          ${camp('Preu/Kg (€)', `<input type="number" step="0.0001" id="dp-preu-kg-${p.id}" required style="width:110px;" />`)}
+          <button type="submit" data-producte="${p.id}">Afegir línia</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function htmlDetallProducteCereal(p) {
+  return `
+    <div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--gaco-border);">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:8px;">
+        ${camp('Kg', `<input type="number" step="0.01" id="pc-kg-${p.id}" value="${p.kg ?? ''}" style="width:110px;" />`)}
+        ${camp('Preu/Kg (€)', `<input type="number" step="0.0001" id="pc-preu-kg-${p.id}" value="${p.preu_kg ?? ''}" style="width:110px;" />`)}
+        ${camp('% Rend/PE (informatiu)', `<input type="number" step="0.01" id="pc-rendiment-${p.id}" value="${p.pct_rendiment ?? ''}" style="width:110px;" />`)}
+        ${camp('Despesa/Kg (€)', `<input type="number" step="0.0001" id="pc-despesa-${p.id}" value="${p.despesa_kg ?? ''}" style="width:110px;" />`)}
+        ${camp('Aportació capital/Kg (€)', `<input type="number" step="0.0001" id="pc-aportacio-${p.id}" value="${p.aportacio_capital_kg ?? ''}" style="width:130px;" />`)}
+        <button type="button" data-desar-cereal="${p.id}">Calcular i desar</button>
+      </div>
+      <p id="resum-cereal-${p.id}" style="margin:0; font-size:12px; color:var(--gaco-accent);"></p>
+    </div>
+  `;
+}
+
+function resumCereal(p) {
+  const kgNet = Number(p.kg_net ?? p.kg) || 0;
+  return `Kg net: ${kgNet} · Import: ${formatImport(kgNet * (Number(p.preu_kg) || 0))} · BI: ${formatImport(p.base_imposable)} · IVA: ${formatImport(p.iva)} · Aportació: ${formatImport((Number(p.aportacio_capital_kg) || 0) * kgNet)} · Net: ${formatImport(p.import_net)}`;
+}
+
+
 function htmlSeccioC(f) {
   return `
     <div class="modal-section">
@@ -567,6 +648,9 @@ function vincularModalFactura(body, f, teLinies) {
     });
     body.querySelector('#form-linia').addEventListener('submit', (e) => altaLinia(e, body, f.id));
     carregarLinies(body, f.id);
+  } else if (TIPUS_AGRARIS.includes(f.tipus_document)) {
+    body.querySelector('#form-producte').addEventListener('submit', (e) => altaProducte(e, body, f.id, f.tipus_document));
+    carregarProductes(body, f.id, f.tipus_document);
   }
 
   body.querySelector('#btn-desar-factura').addEventListener('click', () => desarCapcalera(body, f));
@@ -615,6 +699,9 @@ async function desarCapcalera(body, f) {
   if (TIPUS_AMB_LINIES.includes(f.tipus_document)) {
     const { data: linies } = await supabase.from('gaco_detall_factures_emeses').select('*').eq('factura_id', f.id);
     await recalcularCapcalera(f.id, linies ?? [], actualitzat.import_fons_adversitat ?? f.import_fons_adversitat);
+  } else if (TIPUS_AGRARIS.includes(f.tipus_document)) {
+    const { data: productes } = await supabase.from('gaco_liquidacio_productes').select('*').eq('factura_id', f.id);
+    await recalcularCapceleraAgraria(f.id, productes ?? []);
   }
 
   closeModal();
@@ -906,6 +993,338 @@ async function recalcularCobramentsCapcalera(facturaId) {
 
   const estatSelect = document.getElementById('m-estat');
   if (estatSelect && nouEstat) estatSelect.value = nouEstat;
+}
+
+// -----------------------------------------------------------------------
+// Productes agraris (gaco_liquidacio_productes + gaco_detall_liquidacio_producte)
+// -----------------------------------------------------------------------
+
+async function carregarProductes(body, facturaId, tipusDocument) {
+  const contenidor = body.querySelector('#llista-productes');
+  contenidor.innerHTML = '<p>Carregant productes...</p>';
+
+  const { data, error } = await supabase
+    .from('gaco_liquidacio_productes')
+    .select('*')
+    .eq('factura_id', facturaId)
+    .order('created_at');
+
+  if (error) {
+    contenidor.innerHTML = `<p class="error">Error carregant productes: ${error.message}</p>`;
+    return;
+  }
+
+  pintarProductes(body, facturaId, tipusDocument, data ?? []);
+  await recalcularCapceleraAgraria(facturaId, data ?? []);
+}
+
+function pintarProductes(body, facturaId, tipusDocument, productes) {
+  const contenidor = body.querySelector('#llista-productes');
+
+  if (productes.length === 0) {
+    contenidor.innerHTML = '<p style="color:var(--gaco-text-secondary); font-size:13px;">Encara no hi ha productes.</p>';
+    return;
+  }
+
+  contenidor.innerHTML = productes
+    .map(
+      (p) => `
+    <div style="border-top:0.5px solid var(--gaco-border); padding:8px 0;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <strong>${p.fruita}</strong>${p.varietat ? ` · ${p.varietat}` : ''} <span style="font-size:11px; color:var(--gaco-text-secondary);">(${p.tipus_calcul})</span>
+          <span style="font-size:12px; color:var(--gaco-text-secondary);"> · Net: ${formatImport(p.import_net)}</span>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button data-veure-producte="${p.id}">Veure/Editar</button>
+          <button data-eliminar-producte="${p.id}" title="Eliminar producte">✕</button>
+        </div>
+      </div>
+      <div id="detall-producte-${p.id}" style="display:none;"></div>
+    </div>
+  `
+    )
+    .join('');
+
+  contenidor.querySelectorAll('[data-eliminar-producte]').forEach((btn) => {
+    btn.addEventListener('click', () => eliminarProducte(btn.dataset.eliminarProducte, body, facturaId, tipusDocument));
+  });
+
+  contenidor.querySelectorAll('[data-veure-producte]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.veureProducte;
+      const producte = productes.find((p) => p.id === id);
+      obrirDetallProducte(body, facturaId, tipusDocument, producte);
+    });
+  });
+}
+
+function obrirDetallProducte(body, facturaId, tipusDocument, producte) {
+  const bloc = body.querySelector(`#detall-producte-${producte.id}`);
+  const esVisible = bloc.style.display !== 'none';
+
+  body.querySelectorAll('[id^="detall-producte-"]').forEach((el) => (el.style.display = 'none'));
+  if (esVisible) return;
+
+  bloc.style.display = 'block';
+  bloc.innerHTML = producte.tipus_calcul === 'cereal' ? htmlDetallProducteCereal(producte) : htmlDetallProducteFruita(producte, tipusDocument);
+
+  if (producte.tipus_calcul === 'cereal') {
+    bloc.querySelector(`[data-desar-cereal="${producte.id}"]`).addEventListener('click', () =>
+      desarProducteCereal(body, facturaId, tipusDocument, producte.id)
+    );
+    bloc.querySelector(`#resum-cereal-${producte.id}`).textContent = resumCereal(producte);
+  } else {
+    bloc.querySelector(`[data-desar-bestreta="${producte.id}"]`)?.addEventListener('click', () =>
+      desarBestretaFruita(body, facturaId, tipusDocument, producte.id)
+    );
+    bloc.querySelector(`#form-detall-producte-${producte.id}`).addEventListener('submit', (e) =>
+      altaLiniaProducte(e, body, facturaId, tipusDocument, producte.id)
+    );
+    carregarLiniesProducte(body, facturaId, tipusDocument, producte.id);
+  }
+}
+
+async function desarBestretaFruita(body, facturaId, tipusDocument, producteId) {
+  const bestreta = Number(body.querySelector(`#pr-bestreta-${producteId}`).value) || 0;
+  const { error } = await supabase.from('gaco_liquidacio_productes').update({ import_bestreta: bestreta }).eq('id', producteId);
+  if (error) return alert(`Error desant la bestreta: ${error.message}`);
+  const { data: linies } = await supabase.from('gaco_detall_liquidacio_producte').select('*').eq('producte_id', producteId);
+  await recalcularProducteFruita(facturaId, tipusDocument, producteId, linies ?? []);
+}
+
+async function altaProducte(e, body, facturaId, tipusDocument) {
+  e.preventDefault();
+
+  const fruita = body.querySelector('#pr-fruita').value.trim();
+  if (!fruita) return alert('Cal indicar la fruita o el cereal.');
+
+  const nou = {
+    factura_id: facturaId,
+    fruita,
+    varietat: body.querySelector('#pr-varietat').value.trim() || null,
+    codi_producte: body.querySelector('#pr-codi').value.trim() || null,
+    tipus_calcul: body.querySelector('#pr-tipus-calcul').value,
+  };
+
+  const { error } = await supabase.from('gaco_liquidacio_productes').insert(nou);
+  if (error) return alert(`Error afegint producte: ${error.message}`);
+
+  body.querySelector('#pr-fruita').value = '';
+  body.querySelector('#pr-varietat').value = '';
+  body.querySelector('#pr-codi').value = '';
+
+  await carregarProductes(body, facturaId, tipusDocument);
+}
+
+async function eliminarProducte(producteId, body, facturaId, tipusDocument) {
+  if (!confirm('Eliminar aquest producte i totes les seves línies?')) return;
+  await supabase.from('gaco_detall_liquidacio_producte').delete().eq('producte_id', producteId);
+  const { error } = await supabase.from('gaco_liquidacio_productes').delete().eq('id', producteId);
+  if (error) return alert(`Error eliminant producte: ${error.message}`);
+  await carregarProductes(body, facturaId, tipusDocument);
+}
+
+// -- Fruita: línies de detall per qualitat/calibre --
+
+async function carregarLiniesProducte(body, facturaId, tipusDocument, producteId) {
+  const contenidor = body.querySelector(`#llista-detall-producte-${producteId}`);
+  contenidor.innerHTML = '<p>Carregant línies...</p>';
+
+  const { data, error } = await supabase
+    .from('gaco_detall_liquidacio_producte')
+    .select('*')
+    .eq('producte_id', producteId)
+    .order('created_at');
+
+  if (error) {
+    contenidor.innerHTML = `<p class="error">Error carregant línies: ${error.message}</p>`;
+    return;
+  }
+
+  pintarLiniesProducte(body, facturaId, tipusDocument, producteId, data ?? []);
+  await recalcularProducteFruita(facturaId, tipusDocument, producteId, data ?? []);
+}
+
+function pintarLiniesProducte(body, facturaId, tipusDocument, producteId, linies) {
+  const contenidor = body.querySelector(`#llista-detall-producte-${producteId}`);
+
+  if (linies.length === 0) {
+    contenidor.innerHTML = '<p style="color:var(--gaco-text-secondary); font-size:12px;">Cap línia encara.</p>';
+    return;
+  }
+
+  contenidor.innerHTML = linies
+    .map(
+      (l) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px;">
+      <span>${l.categoria === 'comercial' ? 'Comercial' : 'No comercial'} · ${l.qualitat ?? '—'}${l.calibre ? ` · Calibre ${l.calibre}` : ''} · ${l.kg} Kg × ${l.preu_kg} €</span>
+      <span>${formatImport(l.import)} <button data-eliminar-detall="${l.id}" title="Eliminar">✕</button></span>
+    </div>
+  `
+    )
+    .join('');
+
+  contenidor.querySelectorAll('[data-eliminar-detall]').forEach((btn) => {
+    btn.addEventListener('click', () => eliminarLiniaProducte(btn.dataset.eliminarDetall, body, facturaId, tipusDocument, producteId));
+  });
+}
+
+async function altaLiniaProducte(e, body, facturaId, tipusDocument, producteId) {
+  e.preventDefault();
+
+  const categoria = body.querySelector(`#dp-categoria-${producteId}`).value;
+  const qualitat = body.querySelector(`#dp-qualitat-${producteId}`).value.trim() || null;
+  const calibre = body.querySelector(`#dp-calibre-${producteId}`).value.trim() || null;
+  const kg = Number(body.querySelector(`#dp-kg-${producteId}`).value) || 0;
+  const preuKg = Number(body.querySelector(`#dp-preu-kg-${producteId}`).value) || 0;
+
+  if (!kg || !preuKg) return alert('Cal indicar Kg i Preu/Kg.');
+
+  const nova = {
+    producte_id: producteId,
+    categoria,
+    qualitat,
+    calibre,
+    kg,
+    preu_kg: preuKg,
+    import: kg * preuKg,
+  };
+
+  const { error } = await supabase.from('gaco_detall_liquidacio_producte').insert(nova);
+  if (error) return alert(`Error afegint línia: ${error.message}`);
+
+  body.querySelector(`#dp-qualitat-${producteId}`).value = '';
+  body.querySelector(`#dp-calibre-${producteId}`).value = '';
+  body.querySelector(`#dp-kg-${producteId}`).value = '';
+  body.querySelector(`#dp-preu-kg-${producteId}`).value = '';
+
+  await carregarLiniesProducte(body, facturaId, tipusDocument, producteId);
+}
+
+async function eliminarLiniaProducte(liniaId, body, facturaId, tipusDocument, producteId) {
+  if (!confirm('Eliminar aquesta línia?')) return;
+  const { error } = await supabase.from('gaco_detall_liquidacio_producte').delete().eq('id', liniaId);
+  if (error) return alert(`Error eliminant línia: ${error.message}`);
+  await carregarLiniesProducte(body, facturaId, tipusDocument, producteId);
+}
+
+async function recalcularProducteFruita(facturaId, tipusDocument, producteId, linies) {
+  let importComercial = 0;
+  let importNoComercial = 0;
+  for (const l of linies) {
+    if (l.categoria === 'no_comercial') importNoComercial += Number(l.import) || 0;
+    else importComercial += Number(l.import) || 0;
+  }
+
+  // La bestreta ja avançada es manté manual (el document de liquidació la
+  // dona feta) — no es toca aquí, només es recalcula import_net.
+  const { data: producte } = await supabase
+    .from('gaco_liquidacio_productes')
+    .select('import_bestreta')
+    .eq('id', producteId)
+    .single();
+
+  const bestreta = Number(producte?.import_bestreta) || 0;
+  const importNet = importComercial + importNoComercial + bestreta;
+
+  const { error } = await supabase
+    .from('gaco_liquidacio_productes')
+    .update({ import_comercial: importComercial, import_no_comercial: importNoComercial, import_net: importNet })
+    .eq('id', producteId);
+
+  if (error) console.error('Error actualitzant producte:', error);
+
+  const { data: tots } = await supabase.from('gaco_liquidacio_productes').select('*').eq('factura_id', facturaId);
+  await recalcularCapceleraAgraria(facturaId, tots ?? []);
+}
+
+// -- Cereal: camps directes --
+
+async function desarProducteCereal(body, facturaId, tipusDocument, producteId) {
+  const kg = Number(body.querySelector(`#pc-kg-${producteId}`).value) || 0;
+  const preuKg = Number(body.querySelector(`#pc-preu-kg-${producteId}`).value) || 0;
+  const pctRendiment = body.querySelector(`#pc-rendiment-${producteId}`).value ? Number(body.querySelector(`#pc-rendiment-${producteId}`).value) : null;
+  const despesaKg = Number(body.querySelector(`#pc-despesa-${producteId}`).value) || 0;
+  const aportacioCapitalKg = Number(body.querySelector(`#pc-aportacio-${producteId}`).value) || 0;
+
+  if (!kg || !preuKg) return alert('Cal indicar Kg i Preu/Kg.');
+
+  // Fórmula confirmada amb factura real (% Rend/PE és informatiu, Net = Kg):
+  const kgNet = kg;
+  const importBrut = kgNet * preuKg;
+  const baseImposable = importBrut - despesaKg * kgNet;
+  const iva = baseImposable * 0.04;
+  const bestreta = -(aportacioCapitalKg * kgNet); // deducció, mai manual per a cereal
+  const importNet = baseImposable + iva + bestreta;
+
+  const actualitzat = {
+    kg,
+    preu_kg: preuKg,
+    pct_rendiment: pctRendiment,
+    kg_net: kgNet,
+    despesa_kg: despesaKg,
+    aportacio_capital_kg: aportacioCapitalKg,
+    base_imposable: baseImposable,
+    iva,
+    import_bestreta: bestreta,
+    import_net: importNet,
+  };
+
+  const { error } = await supabase.from('gaco_liquidacio_productes').update(actualitzat).eq('id', producteId);
+  if (error) return alert(`Error desant el producte: ${error.message}`);
+
+  const resumEl = body.querySelector(`#resum-cereal-${producteId}`);
+  if (resumEl) {
+    resumEl.textContent = `Kg net: ${kgNet} · Import: ${formatImport(importBrut)} · BI: ${formatImport(baseImposable)} · IVA: ${formatImport(iva)} · Aportació: ${formatImport(aportacioCapitalKg * kgNet)} · Net: ${formatImport(importNet)}`;
+  }
+
+  const { data: tots } = await supabase.from('gaco_liquidacio_productes').select('*').eq('factura_id', facturaId);
+  await recalcularCapceleraAgraria(facturaId, tots ?? []);
+}
+
+// -- Capçalera agrària --
+
+async function recalcularCapceleraAgraria(facturaId, productes) {
+  let baseImposable = 0;
+  let iva = 0;
+  let importNet = 0;
+
+  for (const p of productes) {
+    if (p.tipus_calcul === 'cereal') {
+      baseImposable += Number(p.base_imposable) || 0;
+      iva += Number(p.iva) || 0;
+    } else {
+      baseImposable += (Number(p.import_comercial) || 0) + (Number(p.import_no_comercial) || 0);
+    }
+    importNet += Number(p.import_net) || 0;
+  }
+
+  const { data: capcalera } = await supabase
+    .from('gaco_factures_emeses')
+    .select('import_fons_adversitat, import_cobrat')
+    .eq('id', facturaId)
+    .single();
+
+  const fonsAdversitat = Number(capcalera?.import_fons_adversitat) || 0;
+  const total = importNet - fonsAdversitat;
+  const importCobrat = Number(capcalera?.import_cobrat) || 0;
+  const importPendent = total - importCobrat;
+
+  const totalsEl = document.getElementById('totals-productes');
+  if (totalsEl) {
+    totalsEl.textContent = `Base: ${formatImport(baseImposable)} · IVA: ${formatImport(iva)} · Total: ${formatImport(total)}`;
+  }
+
+  const { error } = await supabase
+    .from('gaco_factures_emeses')
+    .update({ base_imposable: baseImposable, iva, total, import_pendent: importPendent })
+    .eq('id', facturaId);
+
+  if (error) console.error('Error actualitzant capçalera agrària:', error);
+
+  const resumEl = document.getElementById('resum-cobrament');
+  if (resumEl) resumEl.textContent = `Cobrat: ${formatImport(importCobrat)} · Pendent: ${formatImport(importPendent)}`;
 }
 
 // -----------------------------------------------------------------------
