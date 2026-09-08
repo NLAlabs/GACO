@@ -314,22 +314,29 @@ function pintarLlista(llista) {
 
 function formatData(d) {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('ca-ES');
+  const date = new Date(d);
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}/${date.getFullYear()}`;
 }
 function formatImport(n) {
   if (n == null) return '—';
-  return `${Number(n).toFixed(2)} €`;
+  return `${Number(n).toLocaleString('ca-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 }
 // Preus unitaris (p.ex. gasoil €/L) poden portar fins a 6 decimals reals.
-// Es mostren traient zeros sobrants, amb un mínim de 2 decimals.
+// Es mostren traient zeros sobrants, amb un mínim de 2 decimals, en format ca-ES.
 function formatPreuUnitari(n) {
   if (n == null) return '—';
   const num = Number(n);
-  let s = num.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
-  if (!s.includes('.')) s += '.00';
-  const decimals = s.split('.')[1]?.length ?? 0;
-  if (decimals < 2) s = num.toFixed(2);
-  return `${s} €`;
+  // Determina quants decimals reals té (fins a 6), mínim 2
+  let decimals = 2;
+  for (let d = 6; d >= 2; d--) {
+    if (Math.abs(num * 10 ** d - Math.round(num * 10 ** d)) < 1e-9) {
+      decimals = d;
+      break;
+    }
+  }
+  return `${num.toLocaleString('ca-ES', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} €`;
 }
 
 // -----------------------------------------------------------------------

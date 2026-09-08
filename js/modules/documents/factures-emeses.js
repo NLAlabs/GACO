@@ -310,11 +310,18 @@ function pintarLlista(llista) {
 
 function formatData(d) {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('ca-ES');
+  const date = new Date(d);
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}/${date.getFullYear()}`;
 }
 function formatImport(n) {
   if (n == null) return '—';
-  return `${Number(n).toFixed(2)} €`;
+  return `${Number(n).toLocaleString('ca-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+}
+function formatIban(iban) {
+  if (!iban) return '—';
+  return iban.replace(/\s+/g, '').replace(/(.{4})/g, '$1 ').trim();
 }
 
 function camp(label, inputHtml) {
@@ -1524,7 +1531,7 @@ async function generarDocumentOficial(f) {
     doc.setFont(undefined, 'bold');
     doc.text('IBAN:', marge, y2);
     doc.setFont(undefined, 'normal');
-    doc.text(factura.compte.num_compte, marge + 45, y2);
+    doc.text(formatIban(factura.compte.num_compte), marge + 45, y2);
   }
   y2 += 12;
   doc.setFont(undefined, 'bold');
