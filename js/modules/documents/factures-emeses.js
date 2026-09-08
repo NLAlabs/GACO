@@ -1,5 +1,6 @@
 import { supabase } from '../../lib/supabaseClient.js';
 import { openModal, closeModal } from '../../lib/modal.js';
+import { EMPRESA } from './empresa-config.js';
 
 /**
  * Documents → Factures emeses.
@@ -581,7 +582,16 @@ function resumCereal(p) {
 }
 
 
+const NOTES_LEGALS_IVA_PRESET = {
+  '': '',
+  inversio_subjecte_passiu:
+    'Operación con inversión del sujeto pasivo conforme al artículo 84.Uno.2º.f) de la Ley 37/1992 del IVA.',
+  intracomunitaria:
+    'OPERADOR INTERCOMUNITARIO SIN IVA\n\nOperación con Inversión del Sujeto Pasivo. Art. 84 de la Ley del IVA 37/1992 y Directiva 2006/112/CE',
+};
+
 function htmlSeccioC(f) {
+  const esImprimible = f && ['prestacio_serveis', 'pressupost'].includes(f.tipus_document);
   return `
     <div class="modal-section">
       <p class="modal-section-title">C · Venciment i cobrament</p>
@@ -594,6 +604,19 @@ function htmlSeccioC(f) {
         </p>
       </div>
       ${camp('Notes', `<textarea id="m-notes" style="width:100%; min-height:50px;">${f?.notes ?? ''}</textarea>`)}
+
+      <div style="margin-top:8px;">
+        ${camp('Nota legal IVA (només si IVA=0% per inversió del subjecte passiu / intracomunitària)', `
+          <select id="m-nota-iva-preset" style="margin-bottom:4px;">
+            <option value="">— cap (IVA normal) —</option>
+            <option value="inversio_subjecte_passiu">Inversió del subjecte passiu (construcció, art. 84.Uno.2º.f)</option>
+            <option value="intracomunitaria">Operació intracomunitària (reverse charge, art. 69.Uno)</option>
+          </select>
+          <textarea id="m-nota-iva" style="width:100%; min-height:40px;">${f?.nota_legal_iva ?? ''}</textarea>
+        `)}
+      </div>
+
+      ${esImprimible ? `<button type="button" id="btn-imprimir-oficial" style="margin-top:8px;">🖨️ Imprimir ${f.tipus_document === 'pressupost' ? 'pressupost' : 'factura'}</button>` : ''}
     </div>
   `;
 }
@@ -663,6 +686,13 @@ function vincularModalFactura(body, f, teLinies) {
   });
   body.querySelector('#form-cobrament').addEventListener('submit', (e) => altaCobrament(e, body, f.id));
 
+  body.querySelector('#m-nota-iva-preset')?.addEventListener('change', (e) => {
+    const preset = NOTES_LEGALS_IVA_PRESET[e.target.value] ?? '';
+    if (preset) body.querySelector('#m-nota-iva').value = preset;
+  });
+
+  body.querySelector('#btn-imprimir-oficial')?.addEventListener('click', () => imprimirDocumentOficial(f));
+
   carregarCobraments(body, f.id);
 }
 
@@ -681,6 +711,7 @@ async function desarCapcalera(body, f) {
     compte_bancari_id: body.querySelector('#m-compte-bancari').value || null,
     estat: body.querySelector('#m-estat').value,
     notes: body.querySelector('#m-notes').value.trim() || null,
+    nota_legal_iva: body.querySelector('#m-nota-iva')?.value.trim() || null,
   };
 
   if (body.querySelector('#m-imprevist')) actualitzat.imprevist = body.querySelector('#m-imprevist').checked;
@@ -845,13 +876,26 @@ async function recalcularCapcalera(facturaId, linies, fonsAdversitatOverride) {
 // Fitxers (fitxer_pdf_url / fitxer_xml_url — camps únics a la capçalera)
 // -----------------------------------------------------------------------
 
+function sanititzarNomFitxer(nom) {
+  const idx = nom.lastIndexOf('.');
+  const ext = idx > -1 ? nom.slice(idx).toLowerCase() : '';
+  const base = idx > -1 ? nom.slice(0, idx) : nom;
+  const net = base
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // treu accents (é→e, etc.)
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `${net || 'fitxer'}${ext}`;
+}
+
 async function pujarFitxer(body, facturaId, tipus) {
   const inputId = tipus === 'pdf' ? '#doc-fitxer-pdf' : '#doc-fitxer-xml';
   const fileInput = body.querySelector(inputId);
   const file = fileInput.files[0];
   if (!file) return alert('Selecciona un fitxer primer.');
 
-  const path = `emeses/${facturaId}/${tipus}-${Date.now()}-${file.name}`;
+  const path = `emeses/${facturaId}/${tipus}-${Date.now()}-${sanititzarNomFitxer(file.name)}`;
   const { error: errorPujada } = await supabase.storage.from(BUCKET_ADJUNTS).upload(path, file, { upsert: true });
   if (errorPujada) return alert(`Error pujant el fitxer: ${errorPujada.message}`);
 
@@ -1328,8 +1372,175 @@ async function recalcularCapceleraAgraria(facturaId, productes) {
 }
 
 // -----------------------------------------------------------------------
-// Exportació PDF
+// Document oficial imprimible (factura de prestació de serveis / pressupost)
+// Replica el format d'Excel actual: capçalera empresa+logo, dades client,
+// taula unitats/preu/descripció/import, totals, forma de pagament.
+// NOTA: aquest PDF és el document de treball real (substitueix l'Excel).
 // -----------------------------------------------------------------------
+
+async function imprimirDocumentOficial(f) {
+  try {
+    await carregarJsPdf();
+    await generarDocumentOficial(f);
+  } catch (err) {
+    console.error('Error generant el document:', err);
+    alert(`No s'ha pogut generar el document: ${err.message ?? err}`);
+  }
+}
+
+async function generarDocumentOficial(f) {
+  const { data: factura } = await supabase
+    .from('gaco_factures_emeses')
+    .select('*, client:gaco_clients(nom, adreca, municipi, codi_postal, cif, email1), compte:gaco_comptes(num_compte, descripcio)')
+    .eq('id', f.id)
+    .single();
+
+  const { data: linies } = await supabase
+    .from('gaco_detall_factures_emeses')
+    .select('*')
+    .eq('factura_id', f.id)
+    .order('created_at');
+
+  const esPressupost = factura.tipus_document === 'pressupost';
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const marge = 14;
+
+  // Capçalera: empresa (esquerra) + logo (dreta)
+  doc.setFontSize(15);
+  doc.setFont(undefined, 'bold');
+  doc.text(EMPRESA.nom, marge, 20);
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(10);
+  doc.text(EMPRESA.cif, marge, 26);
+  doc.text(EMPRESA.adreca, marge, 31);
+  doc.text(EMPRESA.poblacio, marge, 36);
+
+  if (EMPRESA.logoBase64) {
+    try {
+      const logoData = EMPRESA.logoBase64.startsWith('data:') ? EMPRESA.logoBase64 : `data:image/png;base64,${EMPRESA.logoBase64}`;
+      doc.addImage(logoData, 'PNG', 165, 10, 30, 30);
+    } catch (e) {
+      console.warn('No s\'ha pogut afegir el logo (format no vàlid):', e);
+    }
+  }
+
+  // Data + número, alineats a la dreta
+  doc.setFontSize(10);
+  doc.setFont(undefined, 'bold');
+  doc.text(esPressupost ? 'Data Pressupost:' : 'Data Factura:', 120, 50);
+  doc.text(esPressupost ? 'Núm. Pressupost:' : 'Núm. Factura:', 120, 56);
+  doc.setFont(undefined, 'normal');
+  doc.text(formatData(factura.data_document), 170, 50);
+  doc.text(factura.num_document ?? '—', 170, 56);
+
+  // Client
+  let y = 70;
+  doc.setFont(undefined, 'bold');
+  doc.text('Client:', marge, y);
+  doc.text(factura.client?.nom ?? factura.contrapart_nom ?? '—', marge + 20, y);
+  doc.setFont(undefined, 'normal');
+  if (factura.client?.adreca) {
+    y += 6;
+    doc.text('Adreça:', marge, y);
+    doc.text(factura.client.adreca, marge + 20, y);
+  }
+  if (factura.client?.codi_postal || factura.client?.municipi) {
+    y += 6;
+    doc.text('Població:', marge, y);
+    doc.text(`${factura.client?.codi_postal ?? ''} - ${factura.client?.municipi ?? ''}`.trim(), marge + 20, y);
+  }
+  if (factura.client?.cif) {
+    y += 6;
+    doc.setFont(undefined, 'bold');
+    doc.text('CIF:', marge, y);
+    doc.text(factura.client.cif, marge + 20, y);
+    doc.setFont(undefined, 'normal');
+  }
+  if (factura.client?.email1) {
+    y += 6;
+    doc.setTextColor(30, 90, 180);
+    doc.text(factura.client.email1, marge, y);
+    doc.setTextColor(0, 0, 0);
+  }
+
+  // Taula de línies
+  const files = (linies ?? []).map((l) => [
+    l.quantitat != null ? String(l.quantitat) : '',
+    l.preu_unitari != null ? formatImport(l.preu_unitari) : '',
+    l.concepte ?? '',
+    formatImport(l.base_imposable),
+  ]);
+
+  doc.autoTable({
+    startY: y + 10,
+    head: [['UNITATS', 'PREU', 'DESCRIPCIÓ', 'IMPORT']],
+    body: files,
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [136, 0, 27] },
+    columnStyles: { 0: { cellWidth: 25 }, 1: { cellWidth: 30 }, 3: { cellWidth: 35, halign: 'right' } },
+  });
+
+  const finalY = doc.lastAutoTable.finalY + 6;
+  const base = Number(factura.base_imposable) || 0;
+  const iva = Number(factura.iva) || 0;
+  const total = Number(factura.total) || 0;
+  // Si no hi ha IVA (0€) mostrem "0%" en lloc de forçar un 21% per defecte
+  // fals — imprescindible en operacions amb inversió del subjecte passiu
+  // o intracomunitàries, on l'IVA és legítimament 0.
+  const ivaPct = iva === 0 ? 0 : (base > 0 ? Math.round((iva / base) * 100) : 21);
+
+  doc.setFontSize(10);
+  doc.text(`Base ${esPressupost ? 'Pressupost' : 'Factura'} :`, 140, finalY, { align: 'left' });
+  doc.text(formatImport(base), 195, finalY, { align: 'right' });
+  doc.text(`IVA ${ivaPct}% :`, 140, finalY + 6, { align: 'left' });
+  doc.text(formatImport(iva), 195, finalY + 6, { align: 'right' });
+  doc.setFont(undefined, 'bold');
+  doc.text(`TOTAL ${esPressupost ? 'PRESSUPOST' : 'FACTURA'} :`, 140, finalY + 13, { align: 'left' });
+  doc.text(formatImport(total), 195, finalY + 13, { align: 'right' });
+  doc.setFont(undefined, 'normal');
+
+  // Nota legal (inversió subjecte passiu / intracomunitària) — obligatòria
+  // quan hi és, es transcriu literal sota els totals.
+  let y1b = finalY + 20;
+  if (factura.nota_legal_iva) {
+    doc.setFontSize(8);
+    doc.setFont(undefined, 'italic');
+    const linesNota = doc.splitTextToSize(factura.nota_legal_iva, 180);
+    doc.text(linesNota, marge, y1b);
+    y1b += linesNota.length * 4 + 4;
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(10);
+  }
+
+  // Forma de pagament / venciment
+  let y2 = Math.max(y1b, finalY + 26);
+  doc.setFont(undefined, 'bold');
+  doc.text('Forma de Pagament :', marge, y2);
+  doc.setFont(undefined, 'normal');
+  doc.text('Transferència Bancària', marge + 45, y2);
+  if (factura.compte?.num_compte) {
+    y2 += 6;
+    doc.setFont(undefined, 'bold');
+    doc.text('IBAN:', marge, y2);
+    doc.setFont(undefined, 'normal');
+    doc.text(factura.compte.num_compte, marge + 45, y2);
+  }
+  y2 += 12;
+  doc.setFont(undefined, 'bold');
+  doc.text('Data Venciment:', marge, y2);
+  doc.setFont(undefined, 'normal');
+  doc.text(formatData(factura.data_venciment), marge + 40, y2);
+  doc.setFont(undefined, 'bold');
+  doc.text('Import:', marge + 90, y2);
+  doc.setFont(undefined, 'normal');
+  doc.text(formatImport(total), marge + 110, y2);
+
+  const prefix = esPressupost ? 'pressupost' : 'factura';
+  doc.save(`${prefix}-${factura.num_document ?? factura.id}.pdf`);
+}
+
+
 
 let jsPdfCarregat = false;
 
