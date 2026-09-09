@@ -1667,7 +1667,7 @@ async function generarPressupostOficial(f) {
   doc.save(`pressupost-${pressupost.num_document ?? pressupost.id}.pdf`);
 }
 
-
+async function generarDocumentOficial(f) {
   const { data: factura } = await supabase
     .from('gaco_factures_emeses')
     .select('*, client:gaco_clients(nom, adreca, municipi, codi_postal, cif, email1), compte:gaco_comptes(num_compte, descripcio)')
