@@ -1817,7 +1817,7 @@ async function generarPressupostOficial(f) {
 
   const prefix = esPressupost ? 'pressupost' : 'factura';
   doc.save(`${prefix}-${factura.num_document ?? factura.id}.pdf`);
-
+}
 
 
 
