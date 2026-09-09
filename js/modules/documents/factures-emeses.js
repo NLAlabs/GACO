@@ -38,6 +38,7 @@ const TIPUS_DOCUMENT_INFO = {
 };
 const TIPUS_DOCUMENT = Object.keys(TIPUS_DOCUMENT_INFO);
 const TIPUS_AMB_LINIES = ['prestacio_serveis', 'pressupost', 'ingres_extraordinari'];
+const TIPUS_LINIES_NORMALS = ['prestacio_serveis', 'ingres_extraordinari']; // pressupost té el seu propi bloc de tarifes
 const TIPUS_AGRARIS = ['bestreta_agraria', 'liquidacio_agraria'];
 
 const ESTATS = ['esborrany', 'pressupost_enviat', 'pressupost_acceptat', 'emesa', 'cobrada_parcial', 'cobrada', 'impagada'];
@@ -163,7 +164,7 @@ export async function render() {
 async function carregarDadesSuport() {
   const [{ data: clients }, { data: conceptes }, { data: comptes }, { data: catalogServeis }, { data: confirming }] = await Promise.all([
     supabase.from('gaco_clients').select('id, nom').eq('actiu', true).order('nom'),
-    supabase.from('gaco_conceptes_comptables').select('id, grup, nom').eq('actiu', true).order('grup'),
+    supabase.from('gaco_conceptes_comptables').select('id, grup, nom').eq('actiu', true).eq('tipus', 'ingres').order('grup'),
     supabase.from('gaco_comptes').select('id, descripcio, num_compte, entitat:gaco_entitats_bancaries(nom)').eq('actiu', true),
     supabase.from('gaco_catalog_serveis').select('id, nom, preu_unitari, iva_pct').eq('actiu', true).order('nom'),
     supabase.from('gaco_confirming').select('id, periode_inici, periode_fi, entitat:gaco_entitats_bancaries(nom)').order('periode_inici', { ascending: false }),
@@ -419,6 +420,12 @@ async function crearFacturaDesDeModal(body, tipus) {
 // Modal — Veure/Editar factura completa
 // -----------------------------------------------------------------------
 
+function seleccionarBlocB(f) {
+  if (f.tipus_document === 'pressupost') return htmlSeccioBPressupost(f);
+  if (TIPUS_AMB_LINIES.includes(f.tipus_document)) return htmlSeccioB();
+  return htmlSeccioBProductes();
+}
+
 async function obrirModalFactura(id) {
   const { data: f, error } = await supabase
     .from('gaco_factures_emeses')
@@ -428,21 +435,19 @@ async function obrirModalFactura(id) {
 
   if (error) return alert(`Error carregant la factura: ${error.message}`);
 
-  const teLinies = TIPUS_AMB_LINIES.includes(f.tipus_document);
-
   openModal({
     title: `${TIPUS_DOCUMENT_INFO[f.tipus_document]?.label ?? f.tipus_document} · ${f.client?.nom ?? f.contrapart_nom ?? '—'}`,
     wide: true,
     bodyHtml: `
       ${htmlSeccioA(f.tipus_document, f)}
-      ${teLinies ? htmlSeccioB() : htmlSeccioBProductes()}
+      ${seleccionarBlocB(f)}
       ${htmlSeccioC(f)}
       <button type="button" id="btn-desar-factura" style="background:var(--gaco-accent); color:#fff; border:none; border-radius:var(--gaco-radius); padding:8px 14px; cursor:pointer;">
         Desar canvis
       </button>
       ${htmlSeccioD(f)}
     `,
-    onMount: (body) => vincularModalFactura(body, f, teLinies),
+    onMount: (body) => vincularModalFactura(body, f),
   });
 }
 
@@ -508,8 +513,35 @@ function htmlSeccioB() {
   `;
 }
 
-// -----------------------------------------------------------------------
-// Bloc B alternatiu — Productes (bestreta_agraria / liquidacio_agraria)
+function htmlSeccioBPressupost(f) {
+  return `
+    <div class="modal-section">
+      <p class="modal-section-title">B · Contingut del pressupost</p>
+      ${camp('Servei ofertat', `<input type="text" id="pp-servei-ofertat" placeholder="p.ex. Tractor con operador + remolque bañera" value="${f?.servei_ofertat ?? ''}" style="width:100%;" />`)}
+      <div style="margin-top:8px;">
+        ${camp('Objecte del servei', `<textarea id="pp-objecte" style="width:100%; min-height:50px;">${f?.objecte_servei ?? ''}</textarea>`)}
+      </div>
+      <div style="margin-top:8px;">
+        ${camp('Descripció del servei', `<textarea id="pp-descripcio" style="width:100%; min-height:90px;" placeholder="Un punt per línia, tal com ho escriuries a l'Excel">${f?.descripcio_servei ?? ''}</textarea>`)}
+      </div>
+
+      <div style="margin-top:12px;">
+        <p class="modal-section-title" style="margin-bottom:6px;">Tarifes</p>
+        <div id="llista-tarifes" style="margin-bottom:8px;"></div>
+        <form id="form-tarifa" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+          ${camp('Etiqueta', `<input type="text" id="tf-etiqueta" required placeholder="p.ex. OPCIÓN A: Servicio de Traílla" style="min-width:220px;" />`)}
+          ${camp('Preu (€)', `<input type="number" step="0.01" id="tf-preu" required style="width:110px;" />`)}
+          ${camp('Unitat', `<input type="text" id="tf-unitat" placeholder="/hora" value="/hora" style="width:90px;" />`)}
+          <button type="submit">Afegir tarifa</button>
+        </form>
+      </div>
+
+      <div style="margin-top:12px;">
+        ${camp('Condicions del servei (inclou combustible/IVA/pagament/etc.)', `<textarea id="pp-condicions" style="width:100%; min-height:120px;">${f?.condicions_servei ?? ''}</textarea>`)}
+      </div>
+    </div>
+  `;
+}
 // Fruita: línies per qualitat/calibre amb categoria comercial/no_comercial.
 // Cereal: camps directes (kg, preu, %rend informatiu, despesa/kg, aportació
 // capital/kg) — fórmula confirmada amb factura real:
@@ -668,8 +700,11 @@ function htmlSeccioD(f) {
   `;
 }
 
-function vincularModalFactura(body, f, teLinies) {
-  if (teLinies) {
+function vincularModalFactura(body, f) {
+  if (f.tipus_document === 'pressupost') {
+    body.querySelector('#form-tarifa').addEventListener('submit', (e) => altaTarifa(e, body, f.id));
+    carregarTarifes(body, f.id);
+  } else if (TIPUS_LINIES_NORMALS.includes(f.tipus_document)) {
     body.querySelector('#ln-catalog-servei')?.addEventListener('change', (e) => {
       const opt = e.target.selectedOptions[0];
       if (opt?.dataset.preu) body.querySelector('#ln-preu').value = opt.dataset.preu;
@@ -703,6 +738,76 @@ function vincularModalFactura(body, f, teLinies) {
   carregarCobraments(body, f.id);
 }
 
+// -- Tarifes de pressupost (reaprofita gaco_detall_factures_emeses: concepte=etiqueta, unitat nou) --
+
+async function carregarTarifes(body, facturaId) {
+  const contenidor = body.querySelector('#llista-tarifes');
+  contenidor.innerHTML = '<p>Carregant tarifes...</p>';
+
+  const { data, error } = await supabase
+    .from('gaco_detall_factures_emeses')
+    .select('*')
+    .eq('factura_id', facturaId)
+    .order('created_at');
+
+  if (error) {
+    contenidor.innerHTML = `<p class="error">Error carregant tarifes: ${error.message}</p>`;
+    return;
+  }
+
+  if (!data || data.length === 0) {
+    contenidor.innerHTML = '<p style="color:var(--gaco-text-secondary); font-size:13px;">Encara no hi ha tarifes.</p>';
+    return;
+  }
+
+  contenidor.innerHTML = data
+    .map(
+      (t) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:13px;">
+      <span>${t.concepte ?? '—'}</span>
+      <span>${formatImport(t.preu_unitari)} ${t.unitat ?? ''} <button data-eliminar-tarifa="${t.id}" title="Eliminar">✕</button></span>
+    </div>
+  `
+    )
+    .join('');
+
+  contenidor.querySelectorAll('[data-eliminar-tarifa]').forEach((btn) => {
+    btn.addEventListener('click', () => eliminarTarifa(btn.dataset.eliminarTarifa, body, facturaId));
+  });
+}
+
+async function altaTarifa(e, body, facturaId) {
+  e.preventDefault();
+
+  const etiqueta = body.querySelector('#tf-etiqueta').value.trim();
+  const preu = Number(body.querySelector('#tf-preu').value) || 0;
+  const unitat = body.querySelector('#tf-unitat').value.trim() || null;
+
+  if (!etiqueta || !preu) return alert('Cal indicar etiqueta i preu.');
+
+  const { error } = await supabase.from('gaco_detall_factures_emeses').insert({
+    factura_id: facturaId,
+    concepte: etiqueta,
+    preu_unitari: preu,
+    unitat,
+    quantitat: 1,
+  });
+  if (error) return alert(`Error afegint tarifa: ${error.message}`);
+
+  body.querySelector('#tf-etiqueta').value = '';
+  body.querySelector('#tf-preu').value = '';
+  body.querySelector('#tf-unitat').value = '/hora';
+
+  await carregarTarifes(body, facturaId);
+}
+
+async function eliminarTarifa(tarifaId, body, facturaId) {
+  if (!confirm('Eliminar aquesta tarifa?')) return;
+  const { error } = await supabase.from('gaco_detall_factures_emeses').delete().eq('id', tarifaId);
+  if (error) return alert(`Error eliminant tarifa: ${error.message}`);
+  await carregarTarifes(body, facturaId);
+}
+
 async function desarCapcalera(body, f) {
   const nomClientText = body.querySelector('#m-client').value.trim();
   const clientTrobat = clientsCache.find((c) => c.nom === nomClientText);
@@ -730,17 +835,24 @@ async function desarCapcalera(body, f) {
       actualitzat.import_fons_adversitat = fonsAdversitat ? Number(fonsAdversitat) : null;
     }
   }
+  if (f.tipus_document === 'pressupost') {
+    actualitzat.servei_ofertat = body.querySelector('#pp-servei-ofertat')?.value.trim() || null;
+    actualitzat.objecte_servei = body.querySelector('#pp-objecte')?.value.trim() || null;
+    actualitzat.descripcio_servei = body.querySelector('#pp-descripcio')?.value.trim() || null;
+    actualitzat.condicions_servei = body.querySelector('#pp-condicions')?.value.trim() || null;
+  }
 
   const { error } = await supabase.from('gaco_factures_emeses').update(actualitzat).eq('id', f.id);
   if (error) return alert(`Error desant: ${error.message}`);
 
-  if (TIPUS_AMB_LINIES.includes(f.tipus_document)) {
+  if (TIPUS_LINIES_NORMALS.includes(f.tipus_document)) {
     const { data: linies } = await supabase.from('gaco_detall_factures_emeses').select('*').eq('factura_id', f.id);
     await recalcularCapcalera(f.id, linies ?? [], actualitzat.import_fons_adversitat ?? f.import_fons_adversitat);
   } else if (TIPUS_AGRARIS.includes(f.tipus_document)) {
     const { data: productes } = await supabase.from('gaco_liquidacio_productes').select('*').eq('factura_id', f.id);
     await recalcularCapceleraAgraria(f.id, productes ?? []);
   }
+  // pressupost: sense totals a recalcular — les tarifes són opcions, no un import a sumar.
 
   closeModal();
   await carregarLlista();
@@ -1388,14 +1500,174 @@ async function recalcularCapceleraAgraria(facturaId, productes) {
 async function imprimirDocumentOficial(f) {
   try {
     await carregarJsPdf();
-    await generarDocumentOficial(f);
+    if (f.tipus_document === 'pressupost') {
+      await generarPressupostOficial(f);
+    } else {
+      await generarDocumentOficial(f);
+    }
   } catch (err) {
     console.error('Error generant el document:', err);
     alert(`No s'ha pogut generar el document: ${err.message ?? err}`);
   }
 }
 
-async function generarDocumentOficial(f) {
+async function generarPressupostOficial(f) {
+  const { data: pressupost } = await supabase
+    .from('gaco_factures_emeses')
+    .select('*, client:gaco_clients(nom, adreca, municipi, codi_postal, cif)')
+    .eq('id', f.id)
+    .single();
+
+  const { data: tarifes } = await supabase
+    .from('gaco_detall_factures_emeses')
+    .select('*')
+    .eq('factura_id', f.id)
+    .order('created_at');
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const marge = 14;
+  const ample = 182;
+
+  // Capçalera empresa + logo (igual que a factura)
+  doc.setFontSize(15);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(136, 0, 27);
+  doc.text(EMPRESA.nom, marge, 20);
+  doc.setTextColor(0, 0, 0);
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(10);
+  doc.text(EMPRESA.cif, marge, 26);
+  doc.text(EMPRESA.adreca, marge, 31);
+  doc.text(EMPRESA.poblacio, marge, 36);
+
+  if (EMPRESA.logoBase64) {
+    try {
+      const logoData = EMPRESA.logoBase64.startsWith('data:') ? EMPRESA.logoBase64 : `data:image/png;base64,${EMPRESA.logoBase64}`;
+      doc.addImage(logoData, 'PNG', 165, 10, 30, 30);
+    } catch (e) {
+      console.warn("No s'ha pogut afegir el logo:", e);
+    }
+  }
+
+  doc.setFont(undefined, 'bold');
+  doc.text('Fecha Presupuesto:', 118, 50);
+  doc.text('Núm. Presupuesto:', 118, 56);
+  doc.setFont(undefined, 'normal');
+  doc.text(formatData(pressupost.data_document), 172, 50);
+  doc.text(pressupost.num_document ?? '—', 172, 56);
+
+  // Client
+  let y = 68;
+  doc.setFont(undefined, 'bold');
+  doc.text('Cliente:', marge, y);
+  doc.setFont(undefined, 'normal');
+  doc.text(pressupost.client?.nom ?? pressupost.contrapart_nom ?? '—', marge + 20, y);
+  if (pressupost.client?.adreca) {
+    y += 5;
+    doc.setFont(undefined, 'bold');
+    doc.text('Dirección:', marge, y);
+    doc.setFont(undefined, 'normal');
+    doc.text(pressupost.client.adreca, marge + 20, y);
+  }
+  if (pressupost.client?.municipi || pressupost.client?.codi_postal) {
+    y += 5;
+    doc.setFont(undefined, 'bold');
+    doc.text('Población:', marge, y);
+    doc.setFont(undefined, 'normal');
+    doc.text(`${pressupost.client?.codi_postal ?? ''} - ${pressupost.client?.municipi ?? ''}`.trim(), marge + 20, y);
+  }
+  if (pressupost.client?.cif) {
+    y += 5;
+    doc.setFont(undefined, 'bold');
+    doc.text('CIF:', marge, y);
+    doc.setFont(undefined, 'normal');
+    doc.text(pressupost.client.cif, marge + 20, y);
+  }
+
+  y += 10;
+
+  // Bloc de secció amb barra de títol granat (amb salt de pàgina si cal)
+  const blocSeccio = (titol, contingut) => {
+    if (!contingut) return;
+    if (y > 250) {
+      doc.addPage();
+      y = 20;
+    }
+    doc.setFillColor(136, 0, 27);
+    doc.rect(marge, y, ample, 6, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont(undefined, 'bold');
+    doc.setFontSize(9);
+    doc.text(titol, marge + 2, y + 4.2);
+    doc.setTextColor(0, 0, 0);
+    y += 9;
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(9.5);
+    const linies = doc.splitTextToSize(contingut, ample - 4);
+    for (const linia of linies) {
+      if (y > 285) {
+        doc.addPage();
+        y = 20;
+      }
+      doc.text(linia, marge + 2, y);
+      y += 4.3;
+    }
+    y += 6;
+  };
+
+  if (pressupost.servei_ofertat) blocSeccio('Servicio ofertado', pressupost.servei_ofertat);
+  if (pressupost.objecte_servei) blocSeccio('Objeto del Servicio', pressupost.objecte_servei);
+  if (pressupost.descripcio_servei) blocSeccio('Descripción del Servicio', pressupost.descripcio_servei);
+
+  // Tarifes
+  if (tarifes && tarifes.length > 0) {
+    if (y > 250) {
+      doc.addPage();
+      y = 20;
+    }
+    doc.setFillColor(136, 0, 27);
+    doc.rect(marge, y, ample, 6, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont(undefined, 'bold');
+    doc.setFontSize(9);
+    doc.text('Tarifas', marge + 2, y + 4.2);
+    doc.setTextColor(0, 0, 0);
+    y += 10;
+    doc.setFontSize(9.5);
+    for (const t of tarifes) {
+      doc.setFont(undefined, 'bold');
+      doc.text(t.concepte ?? '—', marge + 2, y);
+      doc.setFont(undefined, 'normal');
+      doc.text(`${formatImport(t.preu_unitari)} ${t.unitat ?? ''}`.trim(), marge + ample - 2, y, { align: 'right' });
+      y += 6;
+    }
+    y += 4;
+  }
+
+  if (pressupost.condicions_servei) blocSeccio('Condiciones del servicio', pressupost.condicions_servei);
+
+  // Acceptació (bloc fix, sempre igual)
+  y += 4;
+  if (y > 260) {
+    doc.addPage();
+    y = 20;
+  }
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(10);
+  doc.text('Aceptación', marge, y);
+  y += 6;
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(9.5);
+  doc.text('El cliente declara haber leído y aceptado las condiciones del presente presupuesto', marge, y);
+  y += 20;
+  doc.setFont(undefined, 'bold');
+  doc.text('Nombre y Firma', marge, y);
+
+  doc.save(`pressupost-${pressupost.num_document ?? pressupost.id}.pdf`);
+}
+
+
   const { data: factura } = await supabase
     .from('gaco_factures_emeses')
     .select('*, client:gaco_clients(nom, adreca, municipi, codi_postal, cif, email1), compte:gaco_comptes(num_compte, descripcio)')
