@@ -1551,69 +1551,71 @@ async function generarPressupostOficial(f) {
   }
 
   doc.setFont(undefined, 'bold');
-  doc.text('Fecha Presupuesto:', 118, 50);
-  doc.text('Núm. Presupuesto:', 118, 56);
+  doc.setFontSize(9);
+  doc.text('Fecha Presupuesto:', 118, 48);
+  doc.text('Núm. Presupuesto:', 118, 53);
   doc.setFont(undefined, 'normal');
-  doc.text(formatData(pressupost.data_document), 172, 50);
-  doc.text(pressupost.num_document ?? '—', 172, 56);
+  doc.text(formatData(pressupost.data_document), 172, 48);
+  doc.text(pressupost.num_document ?? '—', 172, 53);
 
   // Client
-  let y = 68;
+  let y = 62;
+  doc.setFontSize(9);
   doc.setFont(undefined, 'bold');
   doc.text('Cliente:', marge, y);
   doc.setFont(undefined, 'normal');
   doc.text(pressupost.client?.nom ?? pressupost.contrapart_nom ?? '—', marge + 20, y);
   if (pressupost.client?.adreca) {
-    y += 5;
+    y += 4.5;
     doc.setFont(undefined, 'bold');
     doc.text('Dirección:', marge, y);
     doc.setFont(undefined, 'normal');
     doc.text(pressupost.client.adreca, marge + 20, y);
   }
   if (pressupost.client?.municipi || pressupost.client?.codi_postal) {
-    y += 5;
+    y += 4.5;
     doc.setFont(undefined, 'bold');
     doc.text('Población:', marge, y);
     doc.setFont(undefined, 'normal');
     doc.text(`${pressupost.client?.codi_postal ?? ''} - ${pressupost.client?.municipi ?? ''}`.trim(), marge + 20, y);
   }
   if (pressupost.client?.cif) {
-    y += 5;
+    y += 4.5;
     doc.setFont(undefined, 'bold');
     doc.text('CIF:', marge, y);
     doc.setFont(undefined, 'normal');
     doc.text(pressupost.client.cif, marge + 20, y);
   }
 
-  y += 10;
+  y += 7;
 
   // Bloc de secció amb barra de títol granat (amb salt de pàgina si cal)
   const blocSeccio = (titol, contingut) => {
     if (!contingut) return;
-    if (y > 250) {
+    if (y > 265) {
       doc.addPage();
       y = 20;
     }
     doc.setFillColor(136, 0, 27);
-    doc.rect(marge, y, ample, 6, 'F');
+    doc.rect(marge, y, ample, 5.5, 'F');
     doc.setTextColor(255, 255, 255);
     doc.setFont(undefined, 'bold');
-    doc.setFontSize(9);
-    doc.text(titol, marge + 2, y + 4.2);
+    doc.setFontSize(8.5);
+    doc.text(titol, marge + 2, y + 3.9);
     doc.setTextColor(0, 0, 0);
-    y += 9;
+    y += 7.5;
     doc.setFont(undefined, 'normal');
-    doc.setFontSize(9.5);
+    doc.setFontSize(8.5);
     const linies = doc.splitTextToSize(contingut, ample - 4);
     for (const linia of linies) {
-      if (y > 285) {
+      if (y > 292) {
         doc.addPage();
         y = 20;
       }
       doc.text(linia, marge + 2, y);
-      y += 4.3;
+      y += 3.7;
     }
-    y += 6;
+    y += 4;
   };
 
   if (pressupost.servei_ofertat) blocSeccio('Servicio ofertado', pressupost.servei_ofertat);
@@ -1622,46 +1624,47 @@ async function generarPressupostOficial(f) {
 
   // Tarifes
   if (tarifes && tarifes.length > 0) {
-    if (y > 250) {
+    if (y > 265) {
       doc.addPage();
       y = 20;
     }
     doc.setFillColor(136, 0, 27);
-    doc.rect(marge, y, ample, 6, 'F');
+    doc.rect(marge, y, ample, 5.5, 'F');
     doc.setTextColor(255, 255, 255);
     doc.setFont(undefined, 'bold');
-    doc.setFontSize(9);
-    doc.text('Tarifas', marge + 2, y + 4.2);
+    doc.setFontSize(8.5);
+    doc.text('Tarifas', marge + 2, y + 3.9);
     doc.setTextColor(0, 0, 0);
-    y += 10;
-    doc.setFontSize(9.5);
+    y += 8.5;
+    doc.setFontSize(8.5);
     for (const t of tarifes) {
       doc.setFont(undefined, 'bold');
       doc.text(t.concepte ?? '—', marge + 2, y);
       doc.setFont(undefined, 'normal');
       doc.text(`${formatImport(t.preu_unitari)} ${t.unitat ?? ''}`.trim(), marge + ample - 2, y, { align: 'right' });
-      y += 6;
+      y += 5;
     }
-    y += 4;
+    y += 3;
   }
 
   if (pressupost.condicions_servei) blocSeccio('Condiciones del servicio', pressupost.condicions_servei);
 
   // Acceptació (bloc fix, sempre igual)
-  y += 4;
-  if (y > 260) {
+  y += 3;
+  if (y > 275) {
     doc.addPage();
     y = 20;
   }
   doc.setFont(undefined, 'bold');
-  doc.setFontSize(10);
-  doc.text('Aceptación', marge, y);
-  y += 6;
-  doc.setFont(undefined, 'normal');
   doc.setFontSize(9.5);
+  doc.text('Aceptación', marge, y);
+  y += 5;
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(8.5);
   doc.text('El cliente declara haber leído y aceptado las condiciones del presente presupuesto', marge, y);
-  y += 20;
+  y += 12;
   doc.setFont(undefined, 'bold');
+  doc.setFontSize(9.5);
   doc.text('Nombre y Firma', marge, y);
 
   doc.save(`pressupost-${pressupost.num_document ?? pressupost.id}.pdf`);
