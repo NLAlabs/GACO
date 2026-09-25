@@ -109,6 +109,11 @@ function crearPanell() {
   `;
   document.body.appendChild(el);
 
+  // Evita que un clic dins la calculadora es propagui fins al listener
+  // "clic fora tanca el modal" que pugui tenir modal.js a document.
+  el.addEventListener('click', (e) => e.stopPropagation());
+  el.addEventListener('mousedown', (e) => e.stopPropagation());
+
   displayEl = el.querySelector('.gaco-calc-display');
   el.querySelector('.gaco-calc-close').addEventListener('click', tancarCalculadora);
   el.querySelector('.gaco-calc-insert').addEventListener('click', inserirAlCamp);
@@ -125,7 +130,10 @@ function crearBotoFlotant() {
   btn.className = 'gaco-calc-fab';
   btn.title = 'Calculadora (Alt+K)';
   btn.textContent = '🧮';
-  btn.addEventListener('click', toggleCalculadora);
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleCalculadora();
+  });
   document.body.appendChild(btn);
 }
 
