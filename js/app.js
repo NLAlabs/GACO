@@ -1,5 +1,8 @@
 import { initAuth, login, logout, authState } from './auth.js';
 import { renderRoute } from './router.js';
+import { initCalculadora } from './lib/calculadora.js';
+
+let calculadoraInicialitzada = false;
 
 async function bootstrap() {
   await initAuth();
@@ -31,6 +34,10 @@ function mostrarApp() {
   document.getElementById('app-shell').hidden = false;
   document.getElementById('nav-user').textContent = `${authState.session.user.email} · ${authState.rol}`;
   document.getElementById('nav-configuracio').hidden = authState.rol !== 'admin';
+  if (!calculadoraInicialitzada) {
+    initCalculadora();
+    calculadoraInicialitzada = true;
+  }
   renderRoute();
 }
 
