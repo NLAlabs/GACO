@@ -246,3 +246,115 @@ body {
   .modal { padding-top: 20px; }
   .modal-content { margin: 10px; padding: 16px; }
 }
+/* --- Calculadora flotant (afegir a styles.css) --- */
+
+.gaco-calc-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: var(--gaco-primary, #7a1f2b);
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,.3);
+  z-index: 9998;
+}
+
+.gaco-calc-panel {
+  position: fixed;
+  right: 20px;
+  bottom: 74px;
+  width: 220px;
+  background: var(--gaco-bg, #fff);
+  border: 1px solid var(--gaco-border, #ddd);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  z-index: 9999;
+  display: none;
+  font-size: 14px;
+}
+
+.gaco-calc-panel.active { display: block; }
+
+.gaco-calc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--gaco-primary, #7a1f2b);
+  color: #fff;
+  border-radius: 8px 8px 0 0;
+  font-weight: 600;
+}
+
+.gaco-calc-close {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.gaco-calc-display {
+  text-align: right;
+  padding: 10px;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  border-bottom: 1px solid var(--gaco-border, #ddd);
+  word-break: break-all;
+}
+
+.gaco-calc-display.gaco-calc-copiat { background: #d8f5d8; }
+
+.gaco-calc-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 8px;
+}
+
+.gaco-calc-grid button {
+  padding: 8px 0;
+  border: 1px solid var(--gaco-border, #ddd);
+  background: var(--gaco-surface, #f7f7f7);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.gaco-calc-grid button:hover { background: var(--gaco-primary-light, #eee); }
+
+.gaco-calc-wide { grid-column: span 2; }
+
+.gaco-calc-eq {
+  background: var(--gaco-primary, #7a1f2b) !important;
+  color: #fff;
+  border: none !important;
+}
+
+.gaco-calc-actions {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+
+.gaco-calc-actions button {
+  flex: 1;
+  padding: 6px 0;
+  border: 1px solid var(--gaco-border, #ddd);
+  background: var(--gaco-surface, #f7f7f7);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.gaco-calc-actions .gaco-calc-insert {
+  background: var(--gaco-primary, #7a1f2b);
+  color: #fff;
+  border: none;
+}
