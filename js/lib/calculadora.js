@@ -161,7 +161,11 @@ export function initCalculadora() {
       e.preventDefault();
       toggleCalculadora();
     } else if (e.key === 'Escape' && panelEl && panelEl.classList.contains('active')) {
+      // Com que modal.js també escolta Escape a document per tancar el modal
+      // de la factura, aturem la propagació: si la calculadora està oberta,
+      // Escape només la tanca a ella (cal un segon Escape per tancar la factura).
+      e.stopPropagation();
       tancarCalculadora();
     }
-  });
+  }, true); // fase de captura: ens assegurem d'executar-nos abans que l'escHandler del modal
 }
