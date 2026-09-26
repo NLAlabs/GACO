@@ -311,12 +311,27 @@ async function hashDeduplicacio(compteId, moviment) {
  * @param {ArrayBuffer} buffer  contingut cru del fitxer N43 pujat
  * @param {(compteN43: {claveEntidad, claveOficina, numCuenta}) => Promise<string|null>} resoldreCompteId
  *        Funció que retorna el uuid de gaco_comptes corresponent, o null si no es troba cap match.
- * @returns {Promise<{ filesPerInserir: Array<object>, comptesNoResolts: Array<object>, avisos: string[] }>}
+ * @returns {Promise<{ resultatsPerCompte: Array<ResultatCompte>, comptesNoResolts: Array<object>, avisos: string[] }>}
+ *
+ * ResultatCompte = {
+ *   compteId, numCuenta, dataInicial, dataFinal,
+ *   saldoInicial, saldoFinal (null si no hi ha registre 33), saldoCalculat,
+ *   quadra (null|boolean), numApuntsDebe, totalImportDebe, numApuntsHaber, totalImportHaber,
+ *   moviments: Array<object>  // files llestes per a gaco_moviments_n43 (sense importacio_id encara)
+ * }
+ *
+ * NOTA (disseny pensant en l'automatització futura): aquesta funció i tot
+ * aquest fitxer són purs (no coneixen Supabase ni el DOM) — el mateix codi
+ * es podrà reutilitzar tal qual des d'una funció programada (p. ex. un
+ * Supabase Edge Function que descarregui l'N43 automàticament) el dia que
+ * el banc ho permeti, sense reescriure la lògica de parseig ni de quadre.
+ * Només caldrà canviar qui truca a `importarFitxerN43` i com s'hi arriba
+ * el `buffer`.
  */
 async function importarFitxerN43(buffer, resoldreCompteId) {
   const { text, encoding } = decodeN43Buffer(buffer);
   const { comptes, avisos } = parseN43(text);
-  const filesPerInserir = [];
+  const resultatsPerCompte = [];
   const comptesNoResolts = [];
 
   avisos.push(`Codificació detectada: ${encoding}.`);
@@ -336,9 +351,10 @@ async function importarFitxerN43(buffer, resoldreCompteId) {
       continue;
     }
 
+    const moviments = [];
     for (const moviment of compte.moviments) {
       const concepte = conceptePerMoviment(moviment);
-      filesPerInserir.push({
+      moviments.push({
         compte_id: compteId,
         data_operacio: moviment.dataOperacio,
         data_valor: moviment.dataValor,
@@ -349,49 +365,51 @@ async function importarFitxerN43(buffer, resoldreCompteId) {
         hash_deduplicacio: await hashDeduplicacio(compteId, moviment),
       });
     }
+
+    // Quadre de saldo: saldo_inicial + suma dels imports del fitxer ha de
+    // coincidir amb el saldo_final que declara el propi fitxer (registre 33).
+    // Si no hi ha registre 33, no es pot verificar (queda null, no false).
+    const sumaImports = compte.moviments.reduce((s, m) => s + m.import, 0);
+    const saldoCalculat = Math.round((compte.saldoInicial + sumaImports) * 100) / 100;
+    const saldoFinal = compte.tancament ? compte.tancament.saldoFinal : null;
+    const quadra = saldoFinal === null ? null : Math.abs(saldoCalculat - saldoFinal) < 0.005;
+
+    if (!compte.tancament) {
+      avisos.push(
+        `Compte ${compte.numCuenta}: sense registre de tancament (33) — no es pot verificar el quadre de saldo.`
+      );
+    } else if (!quadra) {
+      avisos.push(
+        `Compte ${compte.numCuenta}: el saldo NO quadra (calculat ${saldoCalculat.toFixed(2)} €, ` +
+          `fitxer ${saldoFinal.toFixed(2)} €, diferència ${(saldoFinal - saldoCalculat).toFixed(2)} €).`
+      );
+    }
+
+    resultatsPerCompte.push({
+      compteId,
+      numCuenta: compte.numCuenta,
+      dataInicial: compte.fechaInicial,
+      dataFinal: compte.fechaFinal,
+      saldoInicial: compte.saldoInicial,
+      saldoFinal,
+      saldoCalculat,
+      quadra,
+      numApuntsDebe: compte.tancament?.numApuntesDebe ?? null,
+      totalImportDebe: compte.tancament?.totalImportesDebe ?? null,
+      numApuntsHaber: compte.tancament?.numApuntesHaber ?? null,
+      totalImportHaber: compte.tancament?.totalImportesHaber ?? null,
+      moviments,
+    });
   }
 
-  return { filesPerInserir, comptesNoResolts, avisos };
+  return { resultatsPerCompte, comptesNoResolts, avisos };
 }
 
 // ----------------------------------------------------------------------------
-// Exemple d'ús amb supabase-js (comentat — no s'executa com a part del mòdul)
+// Ús real des de Supabase: veure n43-import.js del mateix directori, que
+// insereix primer la tanda a gaco_importacions_n43 i després els moviments
+// amb l'importacio_id ja assignat.
 // ----------------------------------------------------------------------------
-/*
-import { createClient } from '@supabase/supabase-js';
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-async function resoldreCompteId({ claveEntidad, claveOficina, numCuenta }) {
-  // Exemple de criteri d'aparellament — AJUSTAR segons com s'emmagatzemi
-  // realment num_compte a gaco_comptes (IBAN complet vs. número intern):
-  const { data } = await supabase
-    .from('gaco_comptes')
-    .select('id, num_compte')
-    .ilike('num_compte', `%${numCuenta}%`)
-    .limit(1)
-    .maybeSingle();
-  return data?.id ?? null;
-}
-
-async function handleFileUpload(file) {
-  const buffer = await file.arrayBuffer();
-  const { filesPerInserir, comptesNoResolts, avisos } = await importarFitxerN43(buffer, resoldreCompteId);
-
-  if (comptesNoResolts.length > 0) {
-    console.warn('Comptes sense aparellar:', comptesNoResolts);
-    // Mostrar a l'usuari abans de continuar — no inserir moviments orfes.
-  }
-
-  // upsert per aprofitar la restricció UNIQUE de hash_deduplicacio:
-  // reimportar el mateix fitxer no genera duplicats (ignoreDuplicates: true).
-  const { error } = await supabase
-    .from('gaco_moviments_n43')
-    .upsert(filesPerInserir, { onConflict: 'hash_deduplicacio', ignoreDuplicates: true });
-
-  if (error) console.error('Error important N43:', error);
-  console.log('Avisos:', avisos);
-}
-*/
 
 export {
   decodeN43Buffer,
