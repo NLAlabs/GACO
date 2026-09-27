@@ -118,7 +118,7 @@ async function cercar() {
   // --- Tots els moviments del compte des de la baseline, en ordre cronològic ---
   let query = supabase
     .from('gaco_moviments_n43')
-    .select('id, data_operacio, data_valor, import, concepte, tipus_moviment, estat')
+    .select('id, data_operacio, data_valor, import, concepte, referencia, tipus_moviment, estat')
     .eq('compte_id', compteId)
     .order('data_valor', { ascending: true })
     .order('created_at', { ascending: true })
@@ -164,7 +164,7 @@ async function cercarSenseSaldo({ dataDes, dataFins, signe, importDes, importFin
   let query = supabase
     .from('gaco_moviments_n43')
     .select(`
-      id, data_operacio, data_valor, import, concepte, tipus_moviment, estat, compte_id,
+      id, data_operacio, data_valor, import, concepte, referencia, tipus_moviment, estat, compte_id,
       gaco_comptes ( num_compte, descripcio, gaco_entitats_bancaries ( nom ) )
     `)
     .order('data_valor', { ascending: false })
@@ -253,6 +253,7 @@ function htmlMoviment(m, facturaVinculada, ambBanc = false) {
     <div class="card">
       <p class="modal-section-title">${capcalera} · ${ETIQUETES_ESTAT[m.estat] ?? m.estat}</p>
       <p>${m.concepte ?? '(sense concepte)'}</p>
+      ${m.referencia ? `<p style="color: var(--gaco-text-secondary); font-size: 13px;">${m.referencia}</p>` : ''}
       <p>${formatData(m.data_valor)} · <strong>${formatImport(m.import)}</strong>
         ${m.saldoVirtual !== undefined ? ` · Saldo: ${formatImport(m.saldoVirtual)}` : ''}
       </p>

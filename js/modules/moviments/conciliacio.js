@@ -47,7 +47,7 @@ export async function render() {
   const { data: moviments, error } = await supabase
     .from('gaco_moviments_n43')
     .select(`
-      id, data_valor, import, concepte, tipus_moviment, estat, compte_id,
+      id, data_valor, import, concepte, referencia, tipus_moviment, estat, compte_id,
       gaco_comptes ( descripcio, tipus, compte_polissa_vinculat_id,
         gaco_entitats_bancaries ( nom ) )
     `)
@@ -126,6 +126,7 @@ function htmlMoviment(m) {
     <div class="card">
       <p class="modal-section-title">${etiquetaCompte(m.gaco_comptes)} · ${ETIQUETES_TIPUS[m.tipus_moviment] ?? 'Sense classificar'}</p>
       <p>${m.concepte ?? '(sense concepte)'}</p>
+      ${m.referencia ? `<p style="color: var(--gaco-text-secondary); font-size: 13px;">${m.referencia}</p>` : ''}
       <p>${formatData(m.data_valor)} · <strong>${formatImport(m.import)}</strong></p>
       <button type="button" data-vincular="${m.id}">
         Vincular a ${esCarrec ? 'factura rebuda' : 'factura emesa'}
@@ -138,7 +139,7 @@ function htmlMoviment(m) {
 async function confirmarTraspas([id1, id2]) {
   const { error } = await supabase
     .from('gaco_moviments_n43')
-    .update({ estat: 'traspas_intern' })
+    .update({ estat: 'traspas_intern', tipus_moviment: 'traspas' })
     .in('id', [id1, id2]);
   if (error) {
     alert('Error confirmant el traspàs: ' + error.message);
@@ -285,7 +286,7 @@ async function vincular(moviment, facturaId) {
 
   const { error: errMoviment } = await supabase
     .from('gaco_moviments_n43')
-    .update({ estat: 'conciliat' })
+    .update({ estat: 'conciliat', tipus_moviment: esRebuda ? 'fra_rebuda' : 'fra_emesa' })
     .eq('id', moviment.id);
   if (errMoviment) {
     alert('Vinculat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
