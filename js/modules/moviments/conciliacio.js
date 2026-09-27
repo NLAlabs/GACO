@@ -113,6 +113,12 @@ export async function render() {
       obrirModalVincularPrestec(m);
     });
   });
+  contenidor.querySelectorAll('[data-amortitzacio-extra]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const m = moviments.find((x) => x.id === btn.dataset.amortitzacioExtra);
+      obrirModalAmortitzacioExtra(m);
+    });
+  });
 }
 
 function htmlParellTraspas([a, b]) {
@@ -138,6 +144,7 @@ function htmlMoviment(m) {
         Vincular a ${esCarrec ? 'factura rebuda' : 'factura emesa'}
       </button>
       ${esCarrec ? `<button type="button" data-vincular-prestec="${m.id}">Vincular a quota de préstec</button>` : ''}
+      ${esCarrec ? `<button type="button" data-amortitzacio-extra="${m.id}">Amortització extraordinària</button>` : ''}
       <button type="button" data-ignorar="${m.id}">Ignorar</button>
     </div>
   `;
@@ -399,6 +406,74 @@ async function vincularPrestec(moviment, quotaId) {
     .eq('id', moviment.id);
   if (errMoviment) {
     alert('Vinculat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
+  }
+
+  closeModal();
+  render();
+}
+
+// --- Amortització extraordinària (cobrament d'ajuts, Secció de Crèdit) ---
+
+async function obrirModalAmortitzacioExtra(moviment) {
+  const { data: prestecs, error } = await supabase
+    .from('gaco_prestecs')
+    .select('id, descripcio, gaco_entitats_bancaries ( nom )')
+    .eq('estat', 'actiu')
+    .order('descripcio');
+
+  if (error) {
+    alert('Error carregant préstecs: ' + error.message);
+    return;
+  }
+
+  openModal({
+    title: `Amortització extraordinària de ${formatImport(moviment.import)}`,
+    bodyHtml: `
+      <p>${formatData(moviment.data_valor)} · ${etiquetaCompte(moviment.gaco_comptes)}</p>
+      <label>Préstec
+        <select id="ax-prestec">
+          ${prestecs.map((p) => `<option value="${p.id}">${p.gaco_entitats_bancaries?.nom ?? '?'} · ${p.descripcio ?? ''}</option>`).join('')}
+        </select>
+      </label>
+      <label>Import amortitzat (€) <input type="number" id="ax-import" step="0.01" value="${Math.abs(moviment.import)}" /></label>
+      <button type="button" id="btn-confirmar-ax">Confirmar</button>
+    `,
+    onMount: (bodyEl) => {
+      bodyEl.querySelector('#btn-confirmar-ax').addEventListener('click', async () => {
+        const prestecId = bodyEl.querySelector('#ax-prestec').value;
+        const import_ = parseFloat(bodyEl.querySelector('#ax-import').value);
+        await confirmarAmortitzacioExtra(moviment, prestecId, import_);
+      });
+    },
+  });
+}
+
+async function confirmarAmortitzacioExtra(moviment, prestecId, import_) {
+  const { error: errIns } = await supabase.from('gaco_amortitzacions_extraordinaries').insert({
+    prestec_id: prestecId,
+    data: moviment.data_valor,
+    import: import_,
+    moviment_n43_id: moviment.id,
+  });
+  if (errIns) {
+    alert('Error registrant l\'amortització: ' + errIns.message);
+    return;
+  }
+
+  const { data: prestec } = await supabase.from('gaco_prestecs').select('capital_pendent').eq('id', prestecId).single();
+  if (prestec) {
+    await supabase
+      .from('gaco_prestecs')
+      .update({ capital_pendent: +(prestec.capital_pendent - import_).toFixed(2) })
+      .eq('id', prestecId);
+  }
+
+  const { error: errMoviment } = await supabase
+    .from('gaco_moviments_n43')
+    .update({ estat: 'conciliat', tipus_moviment: 'rebut' })
+    .eq('id', moviment.id);
+  if (errMoviment) {
+    alert('Registrat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
   }
 
   closeModal();
