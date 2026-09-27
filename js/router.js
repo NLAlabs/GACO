@@ -15,7 +15,9 @@ const SECCIONS = {
     subrutes: {
       comptes: { label: 'Comptes bancaris', modul: './modules/moviments/comptes.js' },
       n43: { label: 'Importar N43', modul: './modules/moviments/n43-import.js' },
+      importacions: { label: 'Importacions', modul: './modules/moviments/importacions.js' },
       conciliacio: { label: 'Conciliació', modul: './modules/moviments/conciliacio.js' },
+      historial: { label: 'Historial', modul: './modules/moviments/historial.js' },
     },
     defaultSubruta: 'conciliacio', // tasca més freqüent primer
   },
