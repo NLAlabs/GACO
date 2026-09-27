@@ -107,6 +107,12 @@ export async function render() {
       obrirModalVincular(m);
     });
   });
+  contenidor.querySelectorAll('[data-vincular-prestec]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const m = moviments.find((x) => x.id === btn.dataset.vincularPrestec);
+      obrirModalVincularPrestec(m);
+    });
+  });
 }
 
 function htmlParellTraspas([a, b]) {
@@ -131,6 +137,7 @@ function htmlMoviment(m) {
       <button type="button" data-vincular="${m.id}">
         Vincular a ${esCarrec ? 'factura rebuda' : 'factura emesa'}
       </button>
+      ${esCarrec ? `<button type="button" data-vincular-prestec="${m.id}">Vincular a quota de préstec</button>` : ''}
       <button type="button" data-ignorar="${m.id}">Ignorar</button>
     </div>
   `;
@@ -287,6 +294,108 @@ async function vincular(moviment, facturaId) {
   const { error: errMoviment } = await supabase
     .from('gaco_moviments_n43')
     .update({ estat: 'conciliat', tipus_moviment: esRebuda ? 'fra_rebuda' : 'fra_emesa' })
+    .eq('id', moviment.id);
+  if (errMoviment) {
+    alert('Vinculat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
+  }
+
+  closeModal();
+  render();
+}
+
+// --- Vincle a quota de préstec (rebuts d'ICF i similars) ---
+
+async function obrirModalVincularPrestec(moviment) {
+  const { data: quotes, error } = await supabase
+    .from('gaco_quotes_prestec')
+    .select('id, num_quota, data_prevista, import_quota, prestec_id, gaco_prestecs ( descripcio, gaco_entitats_bancaries ( nom ) )')
+    .eq('estat', 'pendent')
+    .order('data_prevista', { ascending: true })
+    .limit(200);
+
+  if (error) {
+    alert('Error cercant quotes: ' + error.message);
+    return;
+  }
+
+  const importObjectiu = Math.abs(moviment.import);
+  quotes.sort((a, b) => Math.abs((a.import_quota ?? 0) - importObjectiu) - Math.abs((b.import_quota ?? 0) - importObjectiu));
+
+  openModal({
+    title: `Vincular moviment de ${formatImport(moviment.import)} a una quota`,
+    wide: true,
+    bodyHtml: `
+      <p>${formatData(moviment.data_valor)} · ${etiquetaCompte(moviment.gaco_comptes)}</p>
+      <p>${moviment.concepte ?? ''}</p>
+      <div id="llista-quotes-candidates">
+        ${quotes.length ? quotes.map((q) => htmlQuotaCandidata(q, importObjectiu)).join('') : '<p>No hi ha cap quota pendent.</p>'}
+      </div>
+      <button type="button" id="btn-confirmar-vincle-prestec" disabled>Vincular</button>
+    `,
+    onMount: (bodyEl) => {
+      const btnConfirmar = bodyEl.querySelector('#btn-confirmar-vincle-prestec');
+      bodyEl.addEventListener('change', (e) => {
+        if (e.target.name === 'quota-candidata') btnConfirmar.disabled = false;
+      });
+      btnConfirmar.addEventListener('click', async () => {
+        const seleccionada = bodyEl.querySelector('input[name="quota-candidata"]:checked');
+        if (!seleccionada) return;
+        btnConfirmar.disabled = true;
+        btnConfirmar.textContent = 'Vinculant...';
+        await vincularPrestec(moviment, seleccionada.value);
+      });
+    },
+  });
+}
+
+function htmlQuotaCandidata(q, importObjectiu) {
+  const coincideix = Math.abs((q.import_quota ?? 0) - importObjectiu) < 0.005;
+  return `
+    <label class="modal-section" style="display:block; cursor:pointer;">
+      <input type="radio" name="quota-candidata" value="${q.id}" />
+      <strong>${q.gaco_prestecs?.gaco_entitats_bancaries?.nom ?? '?'} · ${q.gaco_prestecs?.descripcio ?? ''}</strong>
+      — Quota #${q.num_quota} · ${formatData(q.data_prevista)} · ${formatImport(q.import_quota)} ${coincideix ? ' ✅ import exacte' : ''}
+    </label>
+  `;
+}
+
+async function vincularPrestec(moviment, quotaId) {
+  const { data: quota, error: errQuota } = await supabase
+    .from('gaco_quotes_prestec')
+    .update({
+      data_pagament: moviment.data_valor,
+      moviment_n43_id: moviment.id,
+      estat: 'pagada',
+    })
+    .eq('id', quotaId)
+    .select('prestec_id, import_capital')
+    .single();
+
+  if (errQuota) {
+    alert('Error vinculant la quota: ' + errQuota.message);
+    return;
+  }
+
+  // Descompta capital de la quota del capital pendent del préstec, si es
+  // coneix el desglossament (si no, es deixa tal com estava — es podrà
+  // editar més endavant quan arribi el quadre d'amortització real).
+  if (quota.import_capital !== null) {
+    const { data: prestec } = await supabase
+      .from('gaco_prestecs')
+      .select('capital_pendent')
+      .eq('id', quota.prestec_id)
+      .single();
+    if (prestec) {
+      await supabase
+        .from('gaco_prestecs')
+        .update({ capital_pendent: +(prestec.capital_pendent - quota.import_capital).toFixed(2) })
+        .eq('id', quota.prestec_id);
+    }
+  }
+
+  const { error: errMoviment } = await supabase
+    .from('gaco_moviments_n43')
+    .update({ estat: 'conciliat', tipus_moviment: 'rebut' })
     .eq('id', moviment.id);
   if (errMoviment) {
     alert('Vinculat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
