@@ -12,6 +12,10 @@ function formatData(dataStr) {
   return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
 }
 
+function avui() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 const ETIQUETES_TIPUS_PRODUCTE = { prestec: 'Préstec', leasing: 'Leasing', renting: 'Renting' };
 const ETIQUETES_PERIODICITAT = { mensual: 'Mensual', trimestral: 'Trimestral', altres: 'Altres' };
 
@@ -131,7 +135,7 @@ function obrirModalNouPrestec() {
           <input type="number" id="nf-capital-pendent" step="0.01" /></label>
         <label>Data inici <input type="date" id="nf-data-inici" /></label>
         <label>Data fi prevista <input type="date" id="nf-data-fi" /></label>
-        <label>Tipus d'interès (%) <input type="number" id="nf-interes" step="0.01" /></label>
+        <label>Tipus d'interès anual (%) <input type="number" id="nf-interes" step="0.01" /></label>
         <label>Modalitat d'interès
           <select id="nf-interes-modalitat">
             <option value="fix">Fix</option>
@@ -143,7 +147,7 @@ function obrirModalNouPrestec() {
           <select id="nf-periodicitat">
             <option value="mensual">Mensual</option>
             <option value="trimestral">Trimestral</option>
-            <option value="altres">Altres</option>
+            <option value="altres">Altres (sense càlcul automàtic)</option>
           </select>
         </label>
         <label id="camp-opcio-compra" style="display:none;">Opció de compra final (€) <input type="number" id="nf-opcio-compra" step="0.01" /></label>
@@ -159,13 +163,9 @@ function obrirModalNouPrestec() {
         </label>
         <label>Fi de la carència <input type="date" id="nf-fi-carencia" /></label>
       </div>
-      <label><input type="checkbox" id="nf-generar-quotes" checked /> Generar automàticament el quadre de quotes (mensual/trimestral)</label>
-      <div class="modal-section">
-        <label>Generar quotes a partir de (buit = data d'inici; useu la data d'avui si el préstec ja porta temps en marxa)
-          <input type="date" id="nf-generar-des-de" /></label>
-        <label>Número de la primera quota a generar
-          <input type="number" id="nf-primera-quota-num" value="1" style="width:80px;" /></label>
-      </div>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">
+        El quadre de quotes (amb capital/interessos/bonificació calculats) es genera després, des de "Veure quotes".
+      </p>
       <button type="button" id="btn-desar-prestec">Desar</button>
     `,
     onMount: (bodyEl) => {
@@ -201,85 +201,146 @@ async function desarNouPrestec(bodyEl) {
     estat: 'actiu',
   };
 
-  const { data, error } = await supabase.from('gaco_prestecs').insert(prestec).select('id').single();
+  const { error } = await supabase.from('gaco_prestecs').insert(prestec);
   if (error) {
     alert('Error desant el préstec: ' + error.message);
     return;
-  }
-
-  if (bodyEl.querySelector('#nf-generar-quotes').checked) {
-    const generarDesDe = bodyEl.querySelector('#nf-generar-des-de').value || prestec.data_inici;
-    const primeraQuotaNum = parseInt(bodyEl.querySelector('#nf-primera-quota-num').value, 10) || 1;
-    await generarQuotes(data.id, prestec, generarDesDe, primeraQuotaNum);
   }
 
   closeModal();
   carregarLlista();
 }
 
-/**
- * Genera el quadre de quotes amb dates espaiades segons periodicitat i
- * import_quota = quota_periodica. El desglossament capital/interessos de
- * cada quota es deixa buit (null) — no el podem calcular sense el quadre
- * d'amortització real del banc; s'omple més tard editant cada quota quan
- * arribi (o es dedueix del rebut un cop conciliat).
- *
- * `generarDesDe`/`primeraQuotaNum` permeten donar d'alta un préstec que ja
- * porta temps en marxa sense fabricar quotes "pendents" de dates passades
- * que en realitat ja estan pagades fora de GACO — es genera només des
- * d'ara endavant, amb el número de quota real que li correspongui.
- */
-async function generarQuotes(prestecId, prestec, generarDesDe, primeraQuotaNum) {
-  if (!prestec.data_inici || !prestec.data_fi_prevista || !prestec.periodicitat || prestec.periodicitat === 'altres') {
-    return; // no es pot generar automàticament — l'usuari afegirà quotes manualment
-  }
-  const pasMesos = prestec.periodicitat === 'trimestral' ? 3 : 1;
-  const quotes = [];
-  let data = new Date(prestec.data_inici);
-  const dataFi = new Date(prestec.data_fi_prevista);
-  let num = 1;
+// ----------------------------------------------------------------------------
+// Càlcul del quadre d'amortització (sistema francès: quota fixa, interès =
+// capital pendent × tipus anual ÷ períodes/any). Verificat número a número
+// amb un quadre real de l'usuari (ICF, 50.000 €, 3,5%, mensual).
+// ----------------------------------------------------------------------------
 
-  while (data <= dataFi) {
+function pctVigentLocal(bonificacions, dataStr) {
+  const fila = bonificacions.find((b) => b.data_inici <= dataStr && (!b.data_fi || b.data_fi >= dataStr));
+  return fila ? fila.pct_bonificacio : 0;
+}
+
+function calcularQuadreAmortitzacio({
+  prestecId,
+  capitalInicial,
+  dataIniciStr,
+  dataFiStr,
+  numQuotaInicial,
+  quotaPeriodica,
+  periodicitat,
+  tipusInteres,
+  tipusCarencia,
+  dataFiCarencia,
+  bonificacions,
+}) {
+  const pasMesos = periodicitat === 'trimestral' ? 3 : 1;
+  const periodesAny = periodicitat === 'trimestral' ? 4 : 12;
+  const quotes = [];
+  let capitalPendent = capitalInicial;
+  let data = new Date(dataIniciStr);
+  const dataFi = new Date(dataFiStr);
+  let num = numQuotaInicial;
+
+  while (data <= dataFi && capitalPendent > 0.005) {
     const dataStr = data.toISOString().slice(0, 10);
-    if (dataStr >= generarDesDe) {
-      const dinsCarencia = prestec.data_fi_carencia && dataStr <= prestec.data_fi_carencia;
-      quotes.push({
-        prestec_id: prestecId,
-        num_quota: primeraQuotaNum + (num - 1),
-        data_prevista: dataStr,
-        import_quota: dinsCarencia && prestec.tipus_carencia === 'total' ? 0 : prestec.quota_periodica,
-        import_capital: dinsCarencia ? 0 : null, // 'total' o 'nomes_interessos': no amortitza capital
-        estat: 'pendent',
-      });
+    const dinsCarencia = dataFiCarencia && dataStr <= dataFiCarencia;
+
+    let interessosTeorics = Math.round(((capitalPendent * (tipusInteres / 100)) / periodesAny) * 100) / 100;
+    let capital;
+    if (dinsCarencia && tipusCarencia === 'total') {
+      capital = 0;
+      interessosTeorics = 0;
+    } else if (dinsCarencia && tipusCarencia === 'nomes_interessos') {
+      capital = 0;
+    } else {
+      capital = Math.round((quotaPeriodica - interessosTeorics) * 100) / 100;
+      if (capital > capitalPendent) capital = capitalPendent; // darrera quota: payoff exacte
+      if (capital < 0) capital = 0; // la quota no cobreix ni l'interès (cas rar) — evita capital negatiu
     }
+
+    const pct = pctVigentLocal(bonificacions, dataStr);
+    const bonificats = Math.round(((interessosTeorics * pct) / 100) * 100) / 100;
+    const pagats = Math.round((interessosTeorics - bonificats) * 100) / 100;
+    const quotaAPagar = Math.round((capital + pagats) * 100) / 100;
+    capitalPendent = Math.round((capitalPendent - capital) * 100) / 100;
+
+    quotes.push({
+      prestec_id: prestecId,
+      num_quota: num,
+      data_prevista: dataStr,
+      import_capital: capital,
+      import_interessos_teorics: interessosTeorics,
+      import_interessos_bonificats: bonificats,
+      import_interessos: pagats,
+      import_quota: quotaAPagar,
+      capital_pendent_despres: capitalPendent,
+      estat: 'pendent',
+    });
+
     data.setMonth(data.getMonth() + pasMesos);
     num++;
   }
 
-  if (quotes.length) {
-    const { error } = await supabase.from('gaco_quotes_prestec').insert(quotes);
-    if (error) alert('Préstec desat, però hi ha hagut un error generant les quotes: ' + error.message);
-  }
+  return quotes;
 }
 
-async function obtenirPctBonificacioVigent(prestecId, data) {
-  const { data: fila } = await supabase
-    .from('gaco_prestecs_bonificacions_interes')
-    .select('pct_bonificacio')
+/**
+ * Genera/recalcula el quadre a partir d'ara: esborra les quotes encara NO
+ * pagades i les torna a calcular des del capital pendent i data actuals.
+ * Les quotes ja marcades 'pagada' no es toquen — són fet històric.
+ */
+async function generarORecalcularQuadre(prestecId, prestec, bonificacions, dataDes, numInicial) {
+  if (!prestec.data_fi_prevista || !prestec.periodicitat || prestec.periodicitat === 'altres' || !prestec.tipus_interes || !prestec.quota_periodica) {
+    alert("Falten dades del préstec (tipus d'interès, quota, periodicitat mensual/trimestral o data fi) per calcular el quadre automàticament.");
+    return false;
+  }
+
+  const { error: errDel } = await supabase
+    .from('gaco_quotes_prestec')
+    .delete()
     .eq('prestec_id', prestecId)
-    .lte('data_inici', data)
-    .or(`data_fi.is.null,data_fi.gte.${data}`)
-    .order('data_inici', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return fila?.pct_bonificacio ?? 0;
+    .eq('estat', 'pendent');
+  if (errDel) {
+    alert('Error esborrant les quotes pendents anteriors: ' + errDel.message);
+    return false;
+  }
+
+  const quotes = calcularQuadreAmortitzacio({
+    prestecId,
+    capitalInicial: prestec.capital_pendent,
+    dataIniciStr: dataDes,
+    dataFiStr: prestec.data_fi_prevista,
+    numQuotaInicial: numInicial,
+    quotaPeriodica: prestec.quota_periodica,
+    periodicitat: prestec.periodicitat,
+    tipusInteres: prestec.tipus_interes,
+    tipusCarencia: prestec.tipus_carencia,
+    dataFiCarencia: prestec.data_fi_carencia,
+    bonificacions,
+  });
+
+  if (quotes.length) {
+    const { error: errIns } = await supabase.from('gaco_quotes_prestec').insert(quotes);
+    if (errIns) {
+      alert('Error generant les quotes: ' + errIns.message);
+      return false;
+    }
+  }
+  return true;
 }
 
 async function obrirModalQuotes(prestecId, nomPrestec) {
-  const [{ data: quotes, error }, { data: bonificacions }] = await Promise.all([
+  const [{ data: prestec, error: errPrestec }, { data: quotes, error }, { data: bonificacions }] = await Promise.all([
+    supabase
+      .from('gaco_prestecs')
+      .select('capital_pendent, data_inici, data_fi_prevista, tipus_interes, periodicitat, quota_periodica, tipus_carencia, data_fi_carencia')
+      .eq('id', prestecId)
+      .single(),
     supabase
       .from('gaco_quotes_prestec')
-      .select('id, num_quota, data_prevista, import_quota, import_capital, import_interessos, import_interessos_teorics, import_interessos_bonificats, data_pagament, estat')
+      .select('id, num_quota, data_prevista, import_quota, import_capital, import_interessos, import_interessos_teorics, import_interessos_bonificats, capital_pendent_despres, data_pagament, estat')
       .eq('prestec_id', prestecId)
       .order('num_quota'),
     supabase
@@ -289,26 +350,39 @@ async function obrirModalQuotes(prestecId, nomPrestec) {
       .order('data_inici'),
   ]);
 
-  if (error) {
-    alert('Error carregant les quotes: ' + error.message);
+  if (error || errPrestec) {
+    alert('Error carregant les quotes: ' + (error?.message || errPrestec?.message));
     return;
   }
+
+  const numPagades = quotes.filter((q) => q.estat === 'pagada').length;
 
   openModal({
     title: `Quotes — ${nomPrestec || ''}`,
     wide: true,
     bodyHtml: `
       <div class="modal-section">
-        <p class="modal-section-title">Bonificació d'interessos vigent</p>
-        <div id="llista-bonificacions">${(bonificacions ?? []).map(htmlBonificacio).join('') || '<p>Cap tram definit — es considera 0% de bonificació.</p>'}</div>
+        <p class="modal-section-title">Bonificació d'interessos</p>
+        <div id="llista-bonificacions">${(bonificacions ?? []).map((b) => htmlBonificacio(b)).join('') || '<p>Cap tram definit — es considera 0% de bonificació.</p>'}</div>
         <label>Des de <input type="date" id="b-data-inici" /></label>
         <label>Fins a (buit = indefinit) <input type="date" id="b-data-fi" /></label>
         <label>% Bonificació <input type="number" id="b-pct" step="0.01" style="width:80px;" /></label>
         <button type="button" id="btn-afegir-bonificacio">Afegir tram</button>
       </div>
+      <div class="modal-section">
+        <p class="modal-section-title">Generar / recalcular quadre de quotes</p>
+        <p style="font-size:13px; color: var(--gaco-text-secondary);">
+          Esborra i torna a calcular només les quotes encara NO pagades, a partir del capital pendent
+          actual (${formatImport(prestec.capital_pendent)}). Torneu a prémer-ho sempre que canvieu la
+          bonificació, el tipus d'interès o després d'una amortització extraordinària.
+        </p>
+        <label>Des de <input type="date" id="g-data-des" value="${avui()}" /></label>
+        <label>Número de la primera quota a generar <input type="number" id="g-num-inicial" value="${numPagades + 1}" style="width:80px;" /></label>
+        <button type="button" id="btn-generar-quadre">Generar / recalcular</button>
+      </div>
       <div id="llista-quotes">${quotes.map(htmlQuota).join('') || '<p>Cap quota generada encara.</p>'}</div>
       <div class="modal-section">
-        <p class="modal-section-title">Afegir quota manual</p>
+        <p class="modal-section-title">Afegir quota manual (només per a periodicitat "altres")</p>
         <label>Núm. <input type="number" id="q-num" value="${quotes.length + 1}" style="width:70px;" /></label>
         <label>Data prevista <input type="date" id="q-data" /></label>
         <label>Import (€) <input type="number" id="q-import" step="0.01" /></label>
@@ -341,6 +415,29 @@ async function obrirModalQuotes(prestecId, nomPrestec) {
         obrirModalQuotes(prestecId, nomPrestec);
       });
 
+      bodyEl.querySelectorAll('[data-esborrar-bonificacio]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Esborrar aquest tram de bonificació?')) return;
+          await supabase.from('gaco_prestecs_bonificacions_interes').delete().eq('id', btn.dataset.esborrarBonificacio);
+          closeModal();
+          obrirModalQuotes(prestecId, nomPrestec);
+        });
+      });
+
+      bodyEl.querySelector('#btn-generar-quadre').addEventListener('click', async () => {
+        const dataDes = bodyEl.querySelector('#g-data-des').value;
+        const numInicial = parseInt(bodyEl.querySelector('#g-num-inicial').value, 10) || 1;
+        if (!dataDes) {
+          alert('Cal indicar des de quina data generar.');
+          return;
+        }
+        const ok = await generarORecalcularQuadre(prestecId, prestec, bonificacions ?? [], dataDes, numInicial);
+        if (ok) {
+          closeModal();
+          obrirModalQuotes(prestecId, nomPrestec);
+        }
+      });
+
       bodyEl.querySelector('#btn-afegir-quota').addEventListener('click', async () => {
         const dataPrevista = bodyEl.querySelector('#q-data').value;
         if (!dataPrevista) {
@@ -363,32 +460,36 @@ async function obrirModalQuotes(prestecId, nomPrestec) {
       });
 
       bodyEl.querySelectorAll('[data-editar-quota]').forEach((btn) => {
-        btn.addEventListener('click', () => toggleEditorQuota(bodyEl, btn.dataset.editarQuota, prestecId, nomPrestec));
+        btn.addEventListener('click', () =>
+          toggleEditorQuota(bodyEl, btn.dataset.editarQuota, prestecId, nomPrestec, bonificacions ?? [])
+        );
       });
     },
   });
 }
 
 function htmlBonificacio(b) {
-  return `<p>${formatData(b.data_inici)} — ${b.data_fi ? formatData(b.data_fi) : 'indefinit'}: <strong>${b.pct_bonificacio}%</strong></p>`;
+  return `<p>${formatData(b.data_inici)} — ${b.data_fi ? formatData(b.data_fi) : 'indefinit'}: <strong>${b.pct_bonificacio}%</strong>
+    <button type="button" data-esborrar-bonificacio="${b.id}" style="font-size:11px;">Esborrar</button></p>`;
 }
 
 function htmlQuota(q) {
   return `
     <div class="card" id="quota-${q.id}">
-      <p>#${q.num_quota} — ${formatData(q.data_prevista)} · ${formatImport(q.import_quota)} · ${q.estat === 'pagada' ? '✅ Pagada' : 'Pendent'}</p>
+      <p>#${q.num_quota} — ${formatData(q.data_prevista)} · <strong>${formatImport(q.import_quota)}</strong> · ${q.estat === 'pagada' ? '✅ Pagada' : 'Pendent'}</p>
       ${
         q.import_capital !== null
-          ? `<p style="color: var(--gaco-text-secondary);">Capital: ${formatImport(q.import_capital)} · Interessos pagats: ${formatImport(q.import_interessos)}${q.import_interessos_bonificats ? ` · Bonificats: ${formatImport(q.import_interessos_bonificats)}` : ''}</p>`
+          ? `<p style="color: var(--gaco-text-secondary);">Capital: ${formatImport(q.import_capital)} · Interessos pagats: ${formatImport(q.import_interessos)}${q.import_interessos_bonificats ? ` · Bonificats: ${formatImport(q.import_interessos_bonificats)}` : ''} · Capital pendent després: ${formatImport(q.capital_pendent_despres)}</p>`
           : ''
       }
-      <button type="button" data-editar-quota="${q.id}">Editar detall (AMORT / INTS del rebut)</button>
+      ${q.data_pagament ? `<p style="color: var(--gaco-text-secondary); font-size: 13px;">Pagada el ${formatData(q.data_pagament)}</p>` : ''}
+      <button type="button" data-editar-quota="${q.id}">Ajustar detall (si el rebut real difereix en cèntims)</button>
       <div id="editor-quota-${q.id}"></div>
     </div>
   `;
 }
 
-async function toggleEditorQuota(bodyEl, quotaId, prestecId, nomPrestec) {
+async function toggleEditorQuota(bodyEl, quotaId, prestecId, nomPrestec, bonificacions) {
   const contenidor = bodyEl.querySelector(`#editor-quota-${quotaId}`);
   if (contenidor.innerHTML) {
     contenidor.innerHTML = '';
@@ -397,38 +498,38 @@ async function toggleEditorQuota(bodyEl, quotaId, prestecId, nomPrestec) {
 
   const { data: quota } = await supabase
     .from('gaco_quotes_prestec')
-    .select('data_prevista, data_pagament')
+    .select('data_prevista, data_pagament, import_capital, import_interessos_teorics')
     .eq('id', quotaId)
     .single();
-  const pctVigent = await obtenirPctBonificacioVigent(prestecId, quota.data_pagament || quota.data_prevista);
+  const pctVigent = pctVigentLocal(bonificacions, quota.data_pagament || quota.data_prevista);
 
   contenidor.innerHTML = `
     <div class="modal-section">
-      <p style="font-size:13px; color: var(--gaco-text-secondary);">Bonificació vigent en aquesta data: ${pctVigent}%</p>
-      <label>AMORT (capital, €) <input type="number" id="e-amort-${quotaId}" step="0.01" /></label>
-      <label>INTS (interès teòric del rebut, €) <input type="number" id="e-ints-${quotaId}" step="0.01" /></label>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">Bonificació vigent en aquesta data: ${pctVigent}%. Valors precalculats — només cal tocar-los si el rebut real difereix.</p>
+      <label>AMORT (capital, €) <input type="number" id="e-amort-${quotaId}" step="0.01" value="${quota.import_capital ?? ''}" /></label>
+      <label>INTS (interès teòric del rebut, €) <input type="number" id="e-ints-${quotaId}" step="0.01" value="${quota.import_interessos_teorics ?? ''}" /></label>
       <p id="e-resultat-${quotaId}"></p>
-      <button type="button" id="e-calcular-${quotaId}">Calcular</button>
-      <button type="button" id="e-desar-${quotaId}" disabled>Desar</button>
+      <button type="button" id="e-calcular-${quotaId}">Recalcular</button>
+      <button type="button" id="e-desar-${quotaId}">Desar</button>
     </div>
   `;
 
-  let calculat = null;
-  contenidor.querySelector(`#e-calcular-${quotaId}`).addEventListener('click', () => {
+  const calcular = () => {
     const amort = parseFloat(contenidor.querySelector(`#e-amort-${quotaId}`).value) || 0;
     const ints = parseFloat(contenidor.querySelector(`#e-ints-${quotaId}`).value) || 0;
     const bonificats = +((ints * pctVigent) / 100).toFixed(2);
     const pagats = +(ints - bonificats).toFixed(2);
     const total = +(amort + pagats).toFixed(2);
-    calculat = { import_capital: amort, import_interessos_teorics: ints, import_interessos_bonificats: bonificats, import_interessos: pagats, import_quota: total };
     contenidor.querySelector(`#e-resultat-${quotaId}`).innerHTML =
       `Interessos pagats: ${formatImport(pagats)} · Bonificats: ${formatImport(bonificats)} · <strong>Total quota: ${formatImport(total)}</strong>`;
-    contenidor.querySelector(`#e-desar-${quotaId}`).disabled = false;
-  });
+    return { import_capital: amort, import_interessos_teorics: ints, import_interessos_bonificats: bonificats, import_interessos: pagats, import_quota: total };
+  };
+  calcular();
+  contenidor.querySelector(`#e-calcular-${quotaId}`).addEventListener('click', calcular);
 
   contenidor.querySelector(`#e-desar-${quotaId}`).addEventListener('click', async () => {
-    if (!calculat) return;
-    const { error } = await supabase.from('gaco_quotes_prestec').update(calculat).eq('id', quotaId);
+    const valors = calcular();
+    const { error } = await supabase.from('gaco_quotes_prestec').update(valors).eq('id', quotaId);
     if (error) {
       alert('Error desant el detall: ' + error.message);
       return;
@@ -437,3 +538,5 @@ async function toggleEditorQuota(bodyEl, quotaId, prestecId, nomPrestec) {
     obrirModalQuotes(prestecId, nomPrestec);
   });
 }
+
+export { calcularQuadreAmortitzacio, pctVigentLocal };
