@@ -222,6 +222,21 @@ function pctVigentLocal(bonificacions, dataStr) {
   return fila ? fila.pct_bonificacio : 0;
 }
 
+/**
+ * Suma `mesos` a una data 'YYYY-MM-DD' amb aritmètica pura (sense Date local,
+ * per no patir desplaçaments d'un dia pel canvi d'hora estiu/hivern) i
+ * conservant el dia original quan el mes destí el permet (si no, l'últim dia).
+ */
+function afegirMesos(dataStr, mesos) {
+  const [y, m, d] = dataStr.split('-').map(Number);
+  const total = y * 12 + (m - 1) + mesos;
+  const ny = Math.floor(total / 12);
+  const nm = total % 12;
+  const ultimDia = new Date(Date.UTC(ny, nm + 1, 0)).getUTCDate();
+  const nd = Math.min(d, ultimDia);
+  return `${ny}-${String(nm + 1).padStart(2, '0')}-${String(nd).padStart(2, '0')}`;
+}
+
 function calcularQuadreAmortitzacio({
   prestecId,
   capitalInicial,
@@ -239,12 +254,11 @@ function calcularQuadreAmortitzacio({
   const periodesAny = periodicitat === 'trimestral' ? 4 : 12;
   const quotes = [];
   let capitalPendent = capitalInicial;
-  let data = new Date(dataIniciStr);
-  const dataFi = new Date(dataFiStr);
   let num = numQuotaInicial;
+  let k = 0;
+  let dataStr = dataIniciStr;
 
-  while (data <= dataFi && capitalPendent > 0.005) {
-    const dataStr = data.toISOString().slice(0, 10);
+  while (dataStr <= dataFiStr && capitalPendent > 0.005) {
     const dinsCarencia = dataFiCarencia && dataStr <= dataFiCarencia;
 
     let interessosTeorics = Math.round(((capitalPendent * (tipusInteres / 100)) / periodesAny) * 100) / 100;
@@ -276,10 +290,12 @@ function calcularQuadreAmortitzacio({
       import_interessos: pagats,
       import_quota: quotaAPagar,
       capital_pendent_despres: capitalPendent,
+      data_pagament: null,
       estat: 'pendent',
     });
 
-    data.setMonth(data.getMonth() + pasMesos);
+    k++;
+    dataStr = afegirMesos(dataIniciStr, k * pasMesos);
     num++;
   }
 
@@ -291,7 +307,7 @@ function calcularQuadreAmortitzacio({
  * pagades i les torna a calcular des del capital pendent i data actuals.
  * Les quotes ja marcades 'pagada' no es toquen — són fet històric.
  */
-async function generarORecalcularQuadre(prestecId, prestec, bonificacions, dataDes, numInicial) {
+async function generarORecalcularQuadre(prestecId, prestec, bonificacions, dataDes, numInicial, marcarPagadesAbans) {
   if (!prestec.data_fi_prevista || !prestec.periodicitat || prestec.periodicitat === 'altres' || !prestec.tipus_interes || !prestec.quota_periodica) {
     alert("Falten dades del préstec (tipus d'interès, quota, periodicitat mensual/trimestral o data fi) per calcular el quadre automàticament.");
     return false;
@@ -321,12 +337,30 @@ async function generarORecalcularQuadre(prestecId, prestec, bonificacions, dataD
     bonificacions,
   });
 
+  // Historial: les quotes anteriors a la data de tall es donen per pagades
+  // (ja liquidades fora de GACO) i el capital pendent passa a ser el que
+  // queda després de l'última d'aquestes.
+  let capitalPendentNou = null;
+  if (marcarPagadesAbans) {
+    for (const q of quotes) {
+      if (q.data_prevista < marcarPagadesAbans) {
+        q.estat = 'pagada';
+        q.data_pagament = q.data_prevista;
+        capitalPendentNou = q.capital_pendent_despres;
+      }
+    }
+  }
+
   if (quotes.length) {
     const { error: errIns } = await supabase.from('gaco_quotes_prestec').insert(quotes);
     if (errIns) {
       alert('Error generant les quotes: ' + errIns.message);
       return false;
     }
+  }
+
+  if (capitalPendentNou !== null) {
+    await supabase.from('gaco_prestecs').update({ capital_pendent: capitalPendentNou }).eq('id', prestecId);
   }
   return true;
 }
@@ -355,7 +389,11 @@ async function obrirModalQuotes(prestecId, nomPrestec) {
     return;
   }
 
-  const numPagades = quotes.filter((q) => q.estat === 'pagada').length;
+  const pagades = quotes.filter((q) => q.estat === 'pagada');
+  const ultimaPagada = pagades[pagades.length - 1];
+  const pasMesosDefecte = prestec.periodicitat === 'trimestral' ? 3 : 1;
+  const desDeDefecte = ultimaPagada ? afegirMesos(ultimaPagada.data_prevista, pasMesosDefecte) : '';
+  const numInicialDefecte = ultimaPagada ? ultimaPagada.num_quota + 1 : 1;
 
   openModal({
     title: `Quotes — ${nomPrestec || ''}`,
@@ -376,8 +414,15 @@ async function obrirModalQuotes(prestecId, nomPrestec) {
           actual (${formatImport(prestec.capital_pendent)}). Torneu a prémer-ho sempre que canvieu la
           bonificació, el tipus d'interès o després d'una amortització extraordinària.
         </p>
-        <label>Des de <input type="date" id="g-data-des" value="${avui()}" /></label>
-        <label>Número de la primera quota a generar <input type="number" id="g-num-inicial" value="${numPagades + 1}" style="width:80px;" /></label>
+        <label>Data de la primera quota a generar <input type="date" id="g-data-des" value="${desDeDefecte}" /></label>
+        <label>Número d'aquesta quota <input type="number" id="g-num-inicial" value="${numInicialDefecte}" style="width:80px;" /></label>
+        <label><input type="checkbox" id="g-marcar-pagades" /> Marcar com a pagades les quotes anteriors a
+          <input type="date" id="g-data-tall" value="${avui()}" /></label>
+        <p style="font-size:12px; color: var(--gaco-text-secondary);">
+          Per a un préstec que ja porta anys: poseu la data de la primera quota real (p. ex. 03/10/2023), número 1,
+          marqueu la casella i deixeu la data d'avui (o la de la primera quota que voleu conciliar amb el banc).
+          Les dates de cada quota són aproximades (el banc les mou per dies festius); no afecta els imports.
+        </p>
         <button type="button" id="btn-generar-quadre">Generar / recalcular</button>
       </div>
       <div id="llista-quotes">${quotes.map(htmlQuota).join('') || '<p>Cap quota generada encara.</p>'}</div>
@@ -427,11 +472,17 @@ async function obrirModalQuotes(prestecId, nomPrestec) {
       bodyEl.querySelector('#btn-generar-quadre').addEventListener('click', async () => {
         const dataDes = bodyEl.querySelector('#g-data-des').value;
         const numInicial = parseInt(bodyEl.querySelector('#g-num-inicial').value, 10) || 1;
+        const marcar = bodyEl.querySelector('#g-marcar-pagades').checked;
+        const dataTall = marcar ? bodyEl.querySelector('#g-data-tall').value : null;
         if (!dataDes) {
-          alert('Cal indicar des de quina data generar.');
+          alert('Cal indicar la data de la primera quota a generar.');
           return;
         }
-        const ok = await generarORecalcularQuadre(prestecId, prestec, bonificacions ?? [], dataDes, numInicial);
+        if (marcar && !dataTall) {
+          alert('Cal indicar la data de tall per marcar quotes com a pagades.');
+          return;
+        }
+        const ok = await generarORecalcularQuadre(prestecId, prestec, bonificacions ?? [], dataDes, numInicial, dataTall);
         if (ok) {
           closeModal();
           obrirModalQuotes(prestecId, nomPrestec);
