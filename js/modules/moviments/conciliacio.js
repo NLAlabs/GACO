@@ -494,12 +494,12 @@ async function confirmarAmortitzacioExtra(moviment, prestecId, import_, mode) {
       const i = prestec.tipus_interes / 100 / periodesAny;
 
       let n = 0;
-      const d = new Date(moviment.data_valor);
+      const d = new Date(moviment.data_valor); // UTC mitjanit
       const dataFi = new Date(prestec.data_fi_prevista);
-      d.setMonth(d.getMonth() + pasMesos);
+      d.setUTCMonth(d.getUTCMonth() + pasMesos);
       while (d <= dataFi) {
         n++;
-        d.setMonth(d.getMonth() + pasMesos);
+        d.setUTCMonth(d.getUTCMonth() + pasMesos);
       }
 
       if (n > 0) {
