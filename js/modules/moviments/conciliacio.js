@@ -88,11 +88,38 @@ export async function render() {
 
   const solts = moviments.filter((m) => !usats.has(m.id));
 
+  // --- Possibles traspassos entre comptes propis (bancs diferents) ---
+  // Import exacte i signe oposat, comptes diferents, data de valor a ≤3 dies.
+  // Menys fiable que el vincle explícit de pòlissa: es mostren a part i només
+  // si la parella és única (si hi ha ambigüitat, es deixa per al botó manual).
+  const possibles = [];
+  const usatsPossibles = new Set();
+  const compatibles = (a, b) =>
+    a.compte_id !== b.compte_id && Math.abs(a.import + b.import) < 0.005 && diesEntre(a.data_valor, b.data_valor) <= 3;
+  for (const m of solts) {
+    if (m.import >= 0 || usatsPossibles.has(m.id)) continue; // es parteix del càrrec
+    const opcions = solts.filter((x) => x.import > 0 && !usatsPossibles.has(x.id) && compatibles(m, x));
+    if (opcions.length !== 1) continue;
+    const rival = solts.filter((x) => x.import < 0 && !usatsPossibles.has(x.id) && compatibles(x, opcions[0]));
+    if (rival.length !== 1) continue;
+    usatsPossibles.add(m.id);
+    usatsPossibles.add(opcions[0].id);
+    possibles.push([m, opcions[0]]);
+  }
+  const soltsFinals = solts.filter((m) => !usatsPossibles.has(m.id));
+
   contenidor.innerHTML = `
-    ${parells.length ? '<h3>Traspassos detectats automàticament</h3>' : ''}
+    ${parells.length ? '<h3>Traspassos detectats (comptes vinculats)</h3>' : ''}
     ${parells.map((p) => htmlParellTraspas(p)).join('')}
+    ${
+      possibles.length
+        ? `<h3>Possibles traspassos entre comptes propis</h3>
+           <p style="font-size:13px; color: var(--gaco-text-secondary);">Coincideixen import i data (±3 dies), però els comptes no estan vinculats: reviseu-ho abans de confirmar.</p>`
+        : ''
+    }
+    ${possibles.map((p) => htmlParellTraspas(p, true)).join('')}
     <h3>Moviments pendents</h3>
-    <div id="llista-solts">${solts.map((m) => htmlMoviment(m)).join('')}</div>
+    <div id="llista-solts">${soltsFinals.map((m) => htmlMoviment(m)).join('')}</div>
   `;
 
   contenidor.querySelectorAll('[data-confirmar-traspas]').forEach((btn) => {
@@ -101,50 +128,33 @@ export async function render() {
   contenidor.querySelectorAll('[data-ignorar]').forEach((btn) => {
     btn.addEventListener('click', () => ignorarMoviment(btn.dataset.ignorar));
   });
-  contenidor.querySelectorAll('[data-vincular]').forEach((btn) => {
+  contenidor.querySelectorAll('[data-quees]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const m = moviments.find((x) => x.id === btn.dataset.vincular);
-      obrirModalVincular(m);
-    });
-  });
-  contenidor.querySelectorAll('[data-vincular-prestec]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const m = moviments.find((x) => x.id === btn.dataset.vincularPrestec);
-      obrirModalVincularPrestec(m);
-    });
-  });
-  contenidor.querySelectorAll('[data-amortitzacio-extra]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const m = moviments.find((x) => x.id === btn.dataset.amortitzacioExtra);
-      obrirModalAmortitzacioExtra(m);
+      const m = moviments.find((x) => x.id === btn.dataset.quees);
+      obrirModalQueEs(m);
     });
   });
 }
 
-function htmlParellTraspas([a, b]) {
+function htmlParellTraspas([a, b], dubtos = false) {
   return `
     <div class="card">
-      <p><strong>Traspàs intern</strong> — ${formatData(a.data_valor)}</p>
-      <p>${etiquetaCompte(a.gaco_comptes)}: ${formatImport(a.import)}</p>
-      <p>${etiquetaCompte(b.gaco_comptes)}: ${formatImport(b.import)}</p>
+      <p><strong>${dubtos ? 'Possible traspàs' : 'Traspàs intern'}</strong>${dubtos ? '' : ' — ' + formatData(a.data_valor)}</p>
+      <p>${etiquetaCompte(a.gaco_comptes)}: ${formatImport(a.import)}${dubtos ? ' · ' + formatData(a.data_valor) : ''}</p>
+      <p>${etiquetaCompte(b.gaco_comptes)}: ${formatImport(b.import)}${dubtos ? ' · ' + formatData(b.data_valor) : ''}</p>
       <button type="button" data-confirmar-traspas="${a.id},${b.id}">Confirmar traspàs</button>
     </div>
   `;
 }
 
 function htmlMoviment(m) {
-  const esCarrec = m.import < 0;
   return `
     <div class="card">
       <p class="modal-section-title">${etiquetaCompte(m.gaco_comptes)} · ${ETIQUETES_TIPUS[m.tipus_moviment] ?? 'Sense classificar'}</p>
       <p>${m.concepte ?? '(sense concepte)'}</p>
       ${m.referencia ? `<p style="color: var(--gaco-text-secondary); font-size: 13px;">${m.referencia}</p>` : ''}
       <p>${formatData(m.data_valor)} · <strong>${formatImport(m.import)}</strong></p>
-      <button type="button" data-vincular="${m.id}">
-        Vincular a ${esCarrec ? 'factura rebuda' : 'factura emesa'}
-      </button>
-      ${esCarrec ? `<button type="button" data-vincular-prestec="${m.id}">Vincular a quota de préstec</button>` : ''}
-      ${esCarrec ? `<button type="button" data-amortitzacio-extra="${m.id}">Amortització extraordinària</button>` : ''}
+      <button type="button" data-quees="${m.id}">Què és?</button>
       <button type="button" data-ignorar="${m.id}">Ignorar</button>
     </div>
   `;
@@ -544,7 +554,7 @@ async function recalcularFacturaRebuda(facturaId) {
     .eq('factura_id', facturaId);
 
   const pagat = (pagaments ?? []).reduce(
-    (s, p) => s + (p.tipus_moviment === 'devolucio' ? -p.import : p.import),
+    (s, p) => s + (p.tipus_moviment === 'devolucio' ? -Math.abs(p.import) : p.import),
     0
   );
   const total = factura.total ?? 0;
@@ -572,7 +582,7 @@ async function recalcularFacturaEmesa(facturaId) {
     .eq('factura_id', facturaId);
 
   const cobrat = (cobraments ?? []).reduce(
-    (s, c) => s + (c.tipus_moviment === 'devolucio' ? -c.import : c.import),
+    (s, c) => s + (c.tipus_moviment === 'devolucio' ? -Math.abs(c.import) : c.import),
     0
   );
   const total = factura.total ?? 0;
@@ -583,4 +593,305 @@ async function recalcularFacturaEmesa(facturaId) {
     .from('gaco_factures_emeses')
     .update({ import_cobrat: cobrat, import_pendent: pendent, estat: nouEstat })
     .eq('id', facturaId);
+}
+
+// ============================================================================
+// Menú "Què és?" — les opcions depenen del signe del moviment
+// ============================================================================
+
+function diesEntre(dataA, dataB) {
+  return Math.abs(Date.parse(dataA + 'T00:00:00Z') - Date.parse(dataB + 'T00:00:00Z')) / 86400000;
+}
+
+function obrirModalQueEs(m) {
+  const esCarrec = m.import < 0;
+  const opcions = esCarrec
+    ? [
+        ['factura', "Pagament d'una factura o despesa ja registrada"],
+        ['nova-despesa', 'Nova despesa (comissió bancària, taxa...)'],
+        ['prestec', 'Quota de préstec'],
+        ['amortitzacio', 'Amortització extraordinària de préstec'],
+        ['traspas', 'Traspàs a un altre compte propi'],
+        ['sense-factura', 'Sense factura (reintegrament de soci, altres)'],
+      ]
+    : [
+        ['factura', "Cobrament d'una factura emesa"],
+        ['traspas', "Traspàs des d'un altre compte propi"],
+        ['sense-factura', 'Ingrés sense factura (retrocessió de comissió, ajut o subvenció, altres)'],
+      ];
+
+  openModal({
+    title: `Què és aquest moviment de ${formatImport(m.import)}?`,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <p>${m.concepte ?? ''}</p>
+      ${m.referencia ? `<p style="color: var(--gaco-text-secondary); font-size: 13px;">${m.referencia}</p>` : ''}
+      <div>
+        ${opcions
+          .map(
+            ([clau, text]) =>
+              `<button type="button" data-opcio="${clau}" style="display:block; width:100%; text-align:left; margin-bottom:6px; padding:10px;">${text}</button>`
+          )
+          .join('')}
+      </div>
+    `,
+    onMount: (body) => {
+      body.querySelectorAll('[data-opcio]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          switch (btn.dataset.opcio) {
+            case 'factura':
+              return obrirModalVincular(m);
+            case 'nova-despesa':
+              return obrirModalNovaDespesa(m);
+            case 'prestec':
+              return obrirModalVincularPrestec(m);
+            case 'amortitzacio':
+              return obrirModalAmortitzacioExtra(m);
+            case 'traspas':
+              return obrirModalTraspasManual(m);
+            case 'sense-factura':
+              return obrirModalClassificar(m);
+          }
+        });
+      });
+    },
+  });
+}
+
+// --- Nova despesa creada des del propi moviment (comissions, taxes...) ---
+
+async function obrirModalNovaDespesa(m) {
+  const [{ data: proveidors }, { data: conceptes }] = await Promise.all([
+    supabase.from('gaco_proveidors').select('id, nom').eq('actiu', true).order('nom'),
+    supabase.from('gaco_conceptes_comptables').select('id, grup, nom').eq('actiu', true).eq('tipus', 'despesa').order('grup').order('nom'),
+  ]);
+
+  openModal({
+    title: `Nova despesa de ${formatImport(Math.abs(m.import))}`,
+    wide: true,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <p>${m.concepte ?? ''}</p>
+      <div class="modal-section">
+        <label>Proveïdor (o nom lliure)
+          <input type="text" id="nd-proveidor" list="dl-nd-proveidors" placeholder="p. ex. IBERCAJA" />
+          <datalist id="dl-nd-proveidors">${(proveidors ?? []).map((p) => `<option value="${p.nom}"></option>`).join('')}</datalist>
+        </label>
+        <label>Concepte
+          <select id="nd-concepte">
+            <option value="">Selecciona...</option>
+            ${(conceptes ?? []).map((c) => `<option value="${c.id}">${c.grup} — ${c.nom}</option>`).join('')}
+          </select>
+        </label>
+        <label>Descripció <input type="text" id="nd-descripcio" value="${(m.concepte ?? '').replace(/"/g, '&quot;')}" /></label>
+        <label>IVA (%) — les comissions bancàries solen ser exemptes
+          <input type="number" id="nd-iva" value="0" step="0.01" style="width:80px;" /></label>
+        <label>Activitat
+          <select id="nd-activitat">
+            <option value="comuna">Comuna</option>
+            <option value="fruita_cereal">Fruita/cereal</option>
+            <option value="serveis">Serveis</option>
+          </select>
+        </label>
+        <label>Núm. factura (opcional) <input type="text" id="nd-num" /></label>
+      </div>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">
+        Es crea la despesa a Documents → Factures rebudes com a "Despesa", ja pagada amb aquest moviment.
+      </p>
+      <button type="button" id="btn-crear-despesa">Crear i conciliar</button>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-crear-despesa').addEventListener('click', async () => {
+        const nom = body.querySelector('#nd-proveidor').value.trim();
+        const concepteId = body.querySelector('#nd-concepte').value;
+        if (!nom) return alert('Cal indicar un proveïdor o un nom.');
+        if (!concepteId) return alert('Cal triar un concepte.');
+        const prov = (proveidors ?? []).find((p) => p.nom.toLowerCase() === nom.toLowerCase());
+        body.querySelector('#btn-crear-despesa').disabled = true;
+        await crearDespesaDesDeMoviment(m, {
+          proveidorId: prov?.id ?? null,
+          proveidorNom: nom,
+          concepteId,
+          descripcio: body.querySelector('#nd-descripcio').value.trim() || null,
+          ivaPct: Number(body.querySelector('#nd-iva').value) || 0,
+          activitat: body.querySelector('#nd-activitat').value,
+          numFactura: body.querySelector('#nd-num').value.trim() || null,
+        });
+      });
+    },
+  });
+}
+
+async function crearDespesaDesDeMoviment(m, d) {
+  const total = Math.abs(m.import);
+  const base = Math.round((total / (1 + d.ivaPct / 100)) * 100) / 100;
+  const iva = Math.round((total - base) * 100) / 100;
+
+  const { data: factura, error } = await supabase
+    .from('gaco_factures_rebudes')
+    .insert({
+      tipus_factura: 'despesa',
+      proveidor_id: d.proveidorId,
+      contrapart_nom: d.proveidorId ? null : d.proveidorNom,
+      num_factura: d.numFactura,
+      data_factura: m.data_valor,
+      data_recepcio: m.data_valor,
+      activitat: d.activitat,
+      exercici: Number(m.data_valor.slice(0, 4)),
+      imprevist: false,
+      confirming_id: null,
+      base_imposable: base,
+      iva,
+      suplits: 0,
+      total,
+      import_pagat: 0,
+      import_pendent: total,
+      estat: 'pendent',
+      forma_pagament: 'compte_bancari',
+      compte_bancari_id: m.compte_id,
+    })
+    .select('id')
+    .single();
+  if (error) {
+    alert('Error creant la despesa: ' + error.message);
+    return;
+  }
+
+  const { error: errLinia } = await supabase.from('gaco_detall_factures_rebudes').insert({
+    factura_id: factura.id,
+    categoria_id: d.concepteId,
+    descripcio: d.descripcio,
+    quantitat: 1,
+    preu_unitari: base,
+    descompte_pct: null,
+    import_base: base,
+    import_descompte: null,
+    total_linia: base,
+    iva_pct: d.ivaPct,
+    iva,
+    proveidor_suplit_id: null,
+    immobilitzat_id: null,
+  });
+  if (errLinia) {
+    await supabase.from('gaco_factures_rebudes').delete().eq('id', factura.id); // no deixar una despesa sense línia
+    alert('Error creant la línia de la despesa: ' + errLinia.message);
+    return;
+  }
+
+  // Reaprofita el flux normal: pagament amb moviment_n43_id, recàlcul d'estat i moviment conciliat.
+  await vincular(m, factura.id);
+}
+
+// --- Classificar sense factura (reintegrament de soci, retrocessió, ajut...) ---
+
+async function obrirModalClassificar(m) {
+  const { data: conceptes } = await supabase
+    .from('gaco_conceptes_comptables')
+    .select('id, grup, nom, tipus')
+    .eq('actiu', true)
+    .order('grup')
+    .order('nom');
+
+  openModal({
+    title: `Classificar ${formatImport(m.import)} sense factura`,
+    wide: true,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <p>${m.concepte ?? ''}</p>
+      <label>Tipus
+        <select id="cl-tipus">
+          <option value="altres">Altres (retrocessió, ajut o subvenció...)</option>
+          <option value="reintegrament_soci">Reintegrament de soci</option>
+        </select>
+      </label>
+      <label>Concepte
+        <select id="cl-concepte">
+          <option value="">Selecciona...</option>
+          ${(conceptes ?? []).map((c) => `<option value="${c.id}">${c.grup} — ${c.nom} (${c.tipus})</option>`).join('')}
+        </select>
+      </label>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">
+        Si és la retrocessió d'una comissió, trieu el mateix concepte que la despesa: als informes per concepte
+        quedaran compensades.
+      </p>
+      <button type="button" id="btn-classificar">Confirmar</button>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-classificar').addEventListener('click', async () => {
+        const tipus = body.querySelector('#cl-tipus').value;
+        const concepteId = body.querySelector('#cl-concepte').value || null;
+        if (tipus === 'altres' && !concepteId) return alert('Cal triar un concepte.');
+        const { error } = await supabase
+          .from('gaco_moviments_n43')
+          .update({ estat: 'conciliat', tipus_moviment: tipus, categoria_id: concepteId })
+          .eq('id', m.id);
+        if (error) return alert('Error classificant el moviment: ' + error.message);
+        closeModal();
+        render();
+      });
+    },
+  });
+}
+
+// --- Traspàs manual: triar la parella entre els moviments pendents d'altres comptes ---
+
+async function obrirModalTraspasManual(m) {
+  const dia = 86400000;
+  const centre = Date.parse(m.data_valor + 'T00:00:00Z');
+  const des = new Date(centre - 5 * dia).toISOString().slice(0, 10);
+  const fins = new Date(centre + 5 * dia).toISOString().slice(0, 10);
+
+  const { data: candidats, error } = await supabase
+    .from('gaco_moviments_n43')
+    .select('id, data_valor, import, concepte, gaco_comptes ( descripcio, tipus, gaco_entitats_bancaries ( nom ) )')
+    .eq('estat', 'pendent')
+    .neq('compte_id', m.compte_id)
+    .eq('import', -m.import)
+    .gte('data_valor', des)
+    .lte('data_valor', fins)
+    .order('data_valor');
+  if (error) {
+    alert('Error cercant la parella del traspàs: ' + error.message);
+    return;
+  }
+
+  openModal({
+    title: `Traspàs de ${formatImport(m.import)}`,
+    wide: true,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">
+        Moviments pendents d'altres comptes amb l'import exacte contrari, a ±5 dies.
+      </p>
+      ${(candidats ?? [])
+        .map(
+          (c) => `
+        <label class="modal-section" style="display:block; cursor:pointer;">
+          <input type="radio" name="parella" value="${c.id}" />
+          <strong>${etiquetaCompte(c.gaco_comptes)}</strong> — ${formatData(c.data_valor)} · ${formatImport(c.import)}
+          <span style="color: var(--gaco-text-secondary);"> ${c.concepte ?? ''}</span>
+        </label>`
+        )
+        .join('')}
+      <label class="modal-section" style="display:block; cursor:pointer;">
+        <input type="radio" name="parella" value="sense" ${(candidats ?? []).length ? '' : 'checked'} />
+        L'altre moviment encara no està importat (marcar només aquest com a traspàs)
+      </label>
+      <button type="button" id="btn-confirmar-traspas-manual">Confirmar traspàs</button>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-confirmar-traspas-manual').addEventListener('click', async () => {
+        const triat = body.querySelector('input[name="parella"]:checked');
+        if (!triat) return alert('Trieu una opció.');
+        const ids = triat.value === 'sense' ? [m.id] : [m.id, triat.value];
+        const { error: errUpd } = await supabase
+          .from('gaco_moviments_n43')
+          .update({ estat: 'traspas_intern', tipus_moviment: 'traspas' })
+          .in('id', ids);
+        if (errUpd) return alert('Error confirmant el traspàs: ' + errUpd.message);
+        closeModal();
+        render();
+      });
+    },
+  });
 }
