@@ -375,7 +375,7 @@ async function vincularPrestec(moviment, quotaId) {
       estat: 'pagada',
     })
     .eq('id', quotaId)
-    .select('prestec_id, import_capital')
+    .select('prestec_id, import_capital, import_quota')
     .single();
 
   if (errQuota) {
@@ -408,6 +408,15 @@ async function vincularPrestec(moviment, quotaId) {
     alert('Vinculat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
   }
 
+  // Quadre: l'import del moviment hauria de coincidir amb el teòric de la
+  // quota. Si no coincideix, avisem — no bloquegem, ja està vinculat.
+  if (quota.import_quota !== null && Math.abs(Math.abs(moviment.import) - quota.import_quota) > 0.01) {
+    alert(
+      `Vinculat, però l'import no quadra exactament: moviment ${formatImport(moviment.import)}, ` +
+        `quota teòrica ${formatImport(quota.import_quota)}. Reviseu "Ajustar detall" d'aquesta quota a Finançament.`
+    );
+  }
+
   closeModal();
   render();
 }
@@ -436,19 +445,26 @@ async function obrirModalAmortitzacioExtra(moviment) {
         </select>
       </label>
       <label>Import amortitzat (€) <input type="number" id="ax-import" step="0.01" value="${Math.abs(moviment.import)}" /></label>
+      <label>Efecte sobre les quotes futures
+        <select id="ax-mode">
+          <option value="escurcar">Escurçar el termini (la quota es manté)</option>
+          <option value="reduir">Reduir la quota (el termini es manté)</option>
+        </select>
+      </label>
       <button type="button" id="btn-confirmar-ax">Confirmar</button>
     `,
     onMount: (bodyEl) => {
       bodyEl.querySelector('#btn-confirmar-ax').addEventListener('click', async () => {
         const prestecId = bodyEl.querySelector('#ax-prestec').value;
         const import_ = parseFloat(bodyEl.querySelector('#ax-import').value);
-        await confirmarAmortitzacioExtra(moviment, prestecId, import_);
+        const mode = bodyEl.querySelector('#ax-mode').value;
+        await confirmarAmortitzacioExtra(moviment, prestecId, import_, mode);
       });
     },
   });
 }
 
-async function confirmarAmortitzacioExtra(moviment, prestecId, import_) {
+async function confirmarAmortitzacioExtra(moviment, prestecId, import_, mode) {
   const { error: errIns } = await supabase.from('gaco_amortitzacions_extraordinaries').insert({
     prestec_id: prestecId,
     data: moviment.data_valor,
@@ -460,12 +476,40 @@ async function confirmarAmortitzacioExtra(moviment, prestecId, import_) {
     return;
   }
 
-  const { data: prestec } = await supabase.from('gaco_prestecs').select('capital_pendent').eq('id', prestecId).single();
+  const { data: prestec } = await supabase
+    .from('gaco_prestecs')
+    .select('capital_pendent, tipus_interes, periodicitat, data_fi_prevista')
+    .eq('id', prestecId)
+    .single();
+
+  let missatgeRecalcul = '';
   if (prestec) {
-    await supabase
-      .from('gaco_prestecs')
-      .update({ capital_pendent: +(prestec.capital_pendent - import_).toFixed(2) })
-      .eq('id', prestecId);
+    const nouCapital = +(prestec.capital_pendent - import_).toFixed(2);
+    const canvis = { capital_pendent: nouCapital };
+
+    // "Reduir quota": mateix termini, nova quota fixa (fórmula d'anualitat).
+    if (mode === 'reduir' && prestec.tipus_interes && prestec.data_fi_prevista && prestec.periodicitat !== 'altres') {
+      const pasMesos = prestec.periodicitat === 'trimestral' ? 3 : 1;
+      const periodesAny = prestec.periodicitat === 'trimestral' ? 4 : 12;
+      const i = prestec.tipus_interes / 100 / periodesAny;
+
+      let n = 0;
+      const d = new Date(moviment.data_valor);
+      const dataFi = new Date(prestec.data_fi_prevista);
+      d.setMonth(d.getMonth() + pasMesos);
+      while (d <= dataFi) {
+        n++;
+        d.setMonth(d.getMonth() + pasMesos);
+      }
+
+      if (n > 0) {
+        const novaQuota = i === 0 ? nouCapital / n : (nouCapital * i) / (1 - Math.pow(1 + i, -n));
+        canvis.quota_periodica = +novaQuota.toFixed(2);
+        missatgeRecalcul = `Nova quota calculada: ${formatImport(canvis.quota_periodica)} (${n} quotes restants).`;
+      }
+    }
+
+    await supabase.from('gaco_prestecs').update(canvis).eq('id', prestecId);
   }
 
   const { error: errMoviment } = await supabase
@@ -475,6 +519,11 @@ async function confirmarAmortitzacioExtra(moviment, prestecId, import_) {
   if (errMoviment) {
     alert('Registrat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
   }
+
+  alert(
+    `Amortització registrada. ${missatgeRecalcul}\n\n` +
+      `Ara aneu a Finançament → Préstecs → Veure quotes i premeu "Generar / recalcular" perquè el quadre de quotes pendents reflecteixi el nou capital.`
+  );
 
   closeModal();
   render();
