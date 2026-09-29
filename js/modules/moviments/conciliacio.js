@@ -540,10 +540,108 @@ async function confirmarAmortitzacioExtra(moviment, prestecId, import_, mode) {
 }
 
 // No es toca l'estat si ja és 'pendent_liquidar_soci'/'liquidada_soci' — flux propi de socis.
+// --- Retrocessió d'una despesa ja pagada (opció A: resta de la despesa, no ingrés a part) ---
+
+async function obrirModalRetrocessio(m) {
+  const { data: candidates, error } = await supabase
+    .from('gaco_factures_rebudes')
+    .select('id, num_factura, data_factura, total, contrapart_nom, gaco_proveidors ( nom )')
+    .in('estat', ['pagada', 'pagada_parcial'])
+    .order('data_factura', { ascending: false })
+    .limit(200);
+  if (error) {
+    alert('Error cercant despeses: ' + error.message);
+    return;
+  }
+
+  const importObjectiu = Math.abs(m.import);
+  const candidatesAmbNom = candidates.map((f) => ({
+    ...f,
+    nom: f.gaco_proveidors?.nom || f.contrapart_nom || '?',
+  }));
+  candidatesAmbNom.sort((a, b) => Math.abs(a.total - importObjectiu) - Math.abs(b.total - importObjectiu));
+
+  openModal({
+    title: `Retrocessió de ${formatImport(m.import)}`,
+    wide: true,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <p>${m.concepte ?? ''}</p>
+      <div class="modal-section">
+        <input type="text" id="rc-cerca" placeholder="Filtrar per proveïdor o número..." style="width:100%; padding:8px;" />
+      </div>
+      <div id="rc-llista">${candidatesAmbNom.map((f) => htmlCandidataRetrocessio(f)).join('') || '<p>No hi ha cap despesa pagada.</p>'}</div>
+      <button type="button" id="btn-confirmar-retrocessio" disabled>Vincular com a devolució</button>
+    `,
+    onMount: (body) => {
+      const inputCerca = body.querySelector('#rc-cerca');
+      const llista = body.querySelector('#rc-llista');
+      const btn = body.querySelector('#btn-confirmar-retrocessio');
+
+      inputCerca.addEventListener('input', () => {
+        const text = inputCerca.value.trim().toLowerCase();
+        const filtrades = candidatesAmbNom.filter(
+          (f) => f.nom.toLowerCase().includes(text) || (f.num_factura ?? '').toLowerCase().includes(text)
+        );
+        llista.innerHTML = filtrades.map((f) => htmlCandidataRetrocessio(f)).join('') || '<p>Cap resultat.</p>';
+      });
+
+      body.addEventListener('change', (e) => {
+        if (e.target.name === 'despesa-candidata') btn.disabled = false;
+      });
+
+      btn.addEventListener('click', async () => {
+        const triada = body.querySelector('input[name="despesa-candidata"]:checked');
+        if (!triada) return;
+        btn.disabled = true;
+        btn.textContent = 'Vinculant...';
+        await vincularRetrocessio(m, triada.value);
+      });
+    },
+  });
+}
+
+function htmlCandidataRetrocessio(f) {
+  return `
+    <label class="modal-section" style="display:block; cursor:pointer;">
+      <input type="radio" name="despesa-candidata" value="${f.id}" />
+      <strong>${f.nom}</strong>${f.num_factura ? ' · ' + f.num_factura : ''} — ${formatData(f.data_factura)} · Total: ${formatImport(f.total)}
+    </label>
+  `;
+}
+
+async function vincularRetrocessio(m, facturaId) {
+  const { error: errIns } = await supabase.from('gaco_pagaments_factures_rebudes').insert({
+    factura_id: facturaId,
+    tipus_moviment: 'devolucio',
+    data_pagament: m.data_valor,
+    import: Math.abs(m.import),
+    compte_bancari_id: m.compte_id,
+    moviment_n43_id: m.id,
+  });
+  if (errIns) {
+    alert('Error vinculant la retrocessió: ' + errIns.message);
+    return;
+  }
+
+  await recalcularFacturaRebuda(facturaId);
+
+  const { error: errMoviment } = await supabase
+    .from('gaco_moviments_n43')
+    .update({ estat: 'conciliat', tipus_moviment: 'fra_rebuda' })
+    .eq('id', m.id);
+  if (errMoviment) {
+    alert('Vinculat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
+  }
+
+  closeModal();
+  render();
+}
+
 async function recalcularFacturaRebuda(facturaId) {
   const { data: factura } = await supabase
     .from('gaco_factures_rebudes')
-    .select('total, estat')
+    .select('total, estat, tipus_factura')
     .eq('id', facturaId)
     .single();
   if (!factura || ['pendent_liquidar_soci', 'liquidada_soci'].includes(factura.estat)) return;
@@ -553,17 +651,28 @@ async function recalcularFacturaRebuda(facturaId) {
     .select('import, tipus_moviment')
     .eq('factura_id', facturaId);
 
-  const pagat = (pagaments ?? []).reduce(
-    (s, p) => s + (p.tipus_moviment === 'devolucio' ? -Math.abs(p.import) : p.import),
-    0
-  );
+  const pagatBrut = (pagaments ?? [])
+    .filter((p) => p.tipus_moviment !== 'devolucio')
+    .reduce((s, p) => s + p.import, 0);
+  const devolucions = (pagaments ?? [])
+    .filter((p) => p.tipus_moviment === 'devolucio')
+    .reduce((s, p) => s + Math.abs(p.import), 0);
+  const pagatNet = +(pagatBrut - devolucions).toFixed(2);
   const total = factura.total ?? 0;
-  const pendent = +(total - pagat).toFixed(2);
-  const nouEstat = pendent <= 0.005 ? 'pagada' : pagat > 0 ? 'pagada_parcial' : 'pendent';
+
+  // 'despesa' (comissions, nòmines...): una devolució sol ser una retrocessió/
+  // bonificació — no reobre el deute, es basa en el pagat brut (import_pagat
+  // mostra el net perquè es vegi la retrocessió).
+  // 'factura' (proveïdor amb número real): una devolució sol ser un retorn
+  // comercial — sí reobre pendent, es basa en el pagat net, com abans.
+  const esDespesa = factura.tipus_factura === 'despesa';
+  const pagatPerEstat = esDespesa ? pagatBrut : pagatNet;
+  const pendent = +(total - pagatPerEstat).toFixed(2);
+  const nouEstat = pendent <= 0.005 ? 'pagada' : pagatPerEstat > 0 ? 'pagada_parcial' : 'pendent';
 
   await supabase
     .from('gaco_factures_rebudes')
-    .update({ import_pagat: pagat, import_pendent: pendent, estat: nouEstat })
+    .update({ import_pagat: pagatNet, import_pendent: pendent, estat: nouEstat })
     .eq('id', facturaId);
 }
 
@@ -616,8 +725,9 @@ function obrirModalQueEs(m) {
       ]
     : [
         ['factura', "Cobrament d'una factura emesa"],
+        ['retrocessio', "Retrocessió d'una despesa ja pagada (comissió, etc.)"],
         ['traspas', "Traspàs des d'un altre compte propi"],
-        ['sense-factura', 'Ingrés sense factura (retrocessió de comissió, ajut o subvenció, altres)'],
+        ['sense-factura', 'Ingrés sense despesa relacionada (ajut o subvenció, altres)'],
       ];
 
   openModal({
@@ -641,6 +751,8 @@ function obrirModalQueEs(m) {
           switch (btn.dataset.opcio) {
             case 'factura':
               return obrirModalVincular(m);
+            case 'retrocessio':
+              return obrirModalRetrocessio(m);
             case 'nova-despesa':
               return obrirModalNovaDespesa(m);
             case 'prestec':
