@@ -64,6 +64,31 @@ async function comprovarContinuitat(compteId, saldoInicialNou) {
   return { continuaAnterior, avis };
 }
 
+/**
+ * Avisa (sense bloquejar) si algun moviment d'aquesta tanda coincideix en
+ * compte+import+data (±2 dies) amb un moviment introduït a mà — probablement
+ * és el mateix fet, arribat ara "de veritat" per N43.
+ */
+async function cercarPossiblesDuplicatsManual(compteId, moviments) {
+  if (!moviments.length) return [];
+  const dataMin = moviments.reduce((min, m) => (m.data_valor < min ? m.data_valor : min), moviments[0].data_valor);
+  const dataMax = moviments.reduce((max, m) => (m.data_valor > max ? m.data_valor : max), moviments[0].data_valor);
+  const dia = 86400000;
+  const des = new Date(Date.parse(dataMin + 'T00:00:00Z') - 2 * dia).toISOString().slice(0, 10);
+  const fins = new Date(Date.parse(dataMax + 'T00:00:00Z') + 2 * dia).toISOString().slice(0, 10);
+
+  const { data: manuals } = await supabase
+    .from('gaco_moviments_n43')
+    .select('id, data_valor, import, concepte')
+    .eq('compte_id', compteId)
+    .eq('origen', 'manual')
+    .gte('data_valor', des)
+    .lte('data_valor', fins);
+
+  if (!manuals?.length) return [];
+  return manuals.filter((man) => moviments.some((m) => m.import === man.import));
+}
+
 async function handleFileUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -87,6 +112,7 @@ async function handleFileUpload(event) {
       resultat.compteId,
       resultat.saldoInicial
     );
+    const possiblesManuals = await cercarPossiblesDuplicatsManual(resultat.compteId, resultat.moviments);
 
     const { data: importacio, error: errImportacio } = await supabase
       .from('gaco_importacions_n43')
@@ -127,14 +153,14 @@ async function handleFileUpload(event) {
       continue;
     }
 
-    targetesHtml.push(htmlResumCompte(resultat, avisContinuitat));
+    targetesHtml.push(htmlResumCompte(resultat, avisContinuitat, possiblesManuals));
   }
 
   resultatEl.innerHTML = targetesHtml.join('');
   if (avisos.length) console.log('Avisos del parseig N43:', avisos);
 }
 
-function htmlResumCompte(resultat, avisContinuitat) {
+function htmlResumCompte(resultat, avisContinuitat, possiblesManuals = []) {
   const quadraHtml =
     resultat.quadra === null
       ? '<p>⚠️ Sense registre de tancament al fitxer — no es pot verificar el saldo final.</p>'
@@ -148,12 +174,18 @@ function htmlResumCompte(resultat, avisContinuitat) {
       ? ''
       : `<p class="error">⚠️ ${avisContinuitat}</p>`;
 
+  const duplicatsHtml = possiblesManuals.length
+    ? `<p class="error">⚠️ ${possiblesManuals.length} moviment(s) d'aquest fitxer coincideixen amb un moviment que vau introduir a mà — reviseu-los a Conciliació per no deixar-los duplicats:</p>
+       ${possiblesManuals.map((m) => `<p>${formatData(m.data_valor)} · ${formatImport(m.import)} · ${m.concepte ?? ''}</p>`).join('')}`
+    : '';
+
   return `
     <div class="card">
       <p><strong>${resultat.numCuenta}</strong> — ${formatData(resultat.dataInicial)} a ${formatData(resultat.dataFinal)}</p>
       <p>${resultat.moviments.length} moviments processats (saldo inicial ${formatImport(resultat.saldoInicial)}).</p>
       ${quadraHtml}
       ${continuitatHtml}
+      ${duplicatsHtml}
     </div>
   `;
 }
