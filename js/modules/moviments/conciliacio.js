@@ -325,8 +325,9 @@ async function vincular(moviment, facturaId) {
 async function obrirModalVincularPrestec(moviment) {
   const { data: quotes, error } = await supabase
     .from('gaco_quotes_prestec')
-    .select('id, num_quota, data_prevista, import_quota, prestec_id, gaco_prestecs ( descripcio, gaco_entitats_bancaries ( nom ) )')
-    .eq('estat', 'pendent')
+    .select('id, num_quota, data_prevista, import_quota, prestec_id, estat, gaco_prestecs ( descripcio, gaco_entitats_bancaries ( nom ) )')
+    .is('moviment_n43_id', null)
+    .in('estat', ['pendent', 'pagada'])
     .order('data_prevista', { ascending: true })
     .limit(200);
 
@@ -345,7 +346,7 @@ async function obrirModalVincularPrestec(moviment) {
       <p>${formatData(moviment.data_valor)} · ${etiquetaCompte(moviment.gaco_comptes)}</p>
       <p>${moviment.concepte ?? ''}</p>
       <div id="llista-quotes-candidates">
-        ${quotes.length ? quotes.map((q) => htmlQuotaCandidata(q, importObjectiu)).join('') : '<p>No hi ha cap quota pendent.</p>'}
+        ${quotes.length ? quotes.map((q) => htmlQuotaCandidata(q, importObjectiu)).join('') : '<p>No hi ha cap quota disponible.</p>'}
       </div>
       <button type="button" id="btn-confirmar-vincle-prestec" disabled>Vincular</button>
     `,
@@ -372,11 +373,23 @@ function htmlQuotaCandidata(q, importObjectiu) {
       <input type="radio" name="quota-candidata" value="${q.id}" />
       <strong>${q.gaco_prestecs?.gaco_entitats_bancaries?.nom ?? '?'} · ${q.gaco_prestecs?.descripcio ?? ''}</strong>
       — Quota #${q.num_quota} · ${formatData(q.data_prevista)} · ${formatImport(q.import_quota)} ${coincideix ? ' ✅ import exacte' : ''}
+      ${q.estat === 'pagada' ? ' · <em>ja marcada com a pagada — vincle retroactiu</em>' : ''}
     </label>
   `;
 }
 
 async function vincularPrestec(moviment, quotaId) {
+  const { data: quotaAbans, error: errLectura } = await supabase
+    .from('gaco_quotes_prestec')
+    .select('estat')
+    .eq('id', quotaId)
+    .single();
+  if (errLectura) {
+    alert('Error llegint la quota: ' + errLectura.message);
+    return;
+  }
+  const jaEstavaPagada = quotaAbans.estat === 'pagada';
+
   const { data: quota, error: errQuota } = await supabase
     .from('gaco_quotes_prestec')
     .update({
@@ -394,9 +407,11 @@ async function vincularPrestec(moviment, quotaId) {
   }
 
   // Descompta capital de la quota del capital pendent del préstec, si es
-  // coneix el desglossament (si no, es deixa tal com estava — es podrà
-  // editar més endavant quan arribi el quadre d'amortització real).
-  if (quota.import_capital !== null) {
+  // coneix el desglossament — però NOMÉS si la quota passa ara de pendent a
+  // pagada per primera vegada. Si ja era 'pagada' (vincle retroactiu d'una
+  // quota marcada com a históric), el capital ja es va descomptar en el seu
+  // moment i tornar-ho a fer el duplicaria.
+  if (!jaEstavaPagada && quota.import_capital !== null) {
     const { data: prestec } = await supabase
       .from('gaco_prestecs')
       .select('capital_pendent')
