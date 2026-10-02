@@ -576,14 +576,15 @@ function htmlSeccioBProductes() {
 function htmlDetallProducteFruita(p, tipusDocument) {
   return `
     <div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--gaco-border);">
-      ${
-        tipusDocument === 'liquidacio_agraria'
-          ? `<div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:8px;">
-              ${camp('Bestreta ja avançada (€)', `<input type="number" step="0.01" id="pr-bestreta-${p.id}" value="${p.import_bestreta ?? ''}" style="width:130px;" />`)}
-              <button type="button" data-desar-bestreta="${p.id}">Desar</button>
-            </div>`
-          : ''
-      }
+      <div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:8px;">
+        ${camp('% IVA', `<input type="number" step="0.01" id="pr-iva-pct-${p.id}" value="${p.iva_pct ?? 4}" style="width:90px;" />`)}
+        ${
+          tipusDocument === 'liquidacio_agraria'
+            ? camp('Bestreta ja avançada (€)', `<input type="number" step="0.01" id="pr-bestreta-${p.id}" value="${p.import_bestreta ?? ''}" style="width:130px;" />`)
+            : ''
+        }
+        <button type="button" data-desar-ajustos-fruita="${p.id}">Desar</button>
+      </div>
       <div id="llista-detall-producte-${p.id}" style="margin-bottom:10px;"></div>
       <form id="form-detall-producte-${p.id}">
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
@@ -608,6 +609,7 @@ function htmlDetallProducteCereal(p) {
         ${camp('% Rend/PE (informatiu)', `<input type="number" step="0.01" id="pc-rendiment-${p.id}" value="${p.pct_rendiment ?? ''}" style="width:110px;" />`)}
         ${camp('Despesa/Kg (€)', `<input type="number" step="0.0001" id="pc-despesa-${p.id}" value="${p.despesa_kg ?? ''}" style="width:110px;" />`)}
         ${camp('Aportació capital/Kg (€)', `<input type="number" step="0.0001" id="pc-aportacio-${p.id}" value="${p.aportacio_capital_kg ?? ''}" style="width:130px;" />`)}
+        ${camp('% IVA', `<input type="number" step="0.01" id="pc-iva-pct-${p.id}" value="${p.iva_pct ?? 4}" style="width:90px;" />`)}
         <button type="button" data-desar-cereal="${p.id}">Calcular i desar</button>
       </div>
       <p id="resum-cereal-${p.id}" style="margin:0; font-size:12px; color:var(--gaco-accent);"></p>
@@ -1238,8 +1240,8 @@ function obrirDetallProducte(body, facturaId, tipusDocument, producte) {
     );
     bloc.querySelector(`#resum-cereal-${producte.id}`).textContent = resumCereal(producte);
   } else {
-    bloc.querySelector(`[data-desar-bestreta="${producte.id}"]`)?.addEventListener('click', () =>
-      desarBestretaFruita(body, facturaId, tipusDocument, producte.id)
+    bloc.querySelector(`[data-desar-ajustos-fruita="${producte.id}"]`)?.addEventListener('click', () =>
+      desarAjustosFruita(body, facturaId, tipusDocument, producte.id)
     );
     bloc.querySelector(`#form-detall-producte-${producte.id}`).addEventListener('submit', (e) =>
       altaLiniaProducte(e, body, facturaId, tipusDocument, producte.id)
@@ -1248,10 +1250,14 @@ function obrirDetallProducte(body, facturaId, tipusDocument, producte) {
   }
 }
 
-async function desarBestretaFruita(body, facturaId, tipusDocument, producteId) {
-  const bestreta = Number(body.querySelector(`#pr-bestreta-${producteId}`).value) || 0;
-  const { error } = await supabase.from('gaco_liquidacio_productes').update({ import_bestreta: bestreta }).eq('id', producteId);
-  if (error) return alert(`Error desant la bestreta: ${error.message}`);
+async function desarAjustosFruita(body, facturaId, tipusDocument, producteId) {
+  const ivaPct = body.querySelector(`#pr-iva-pct-${producteId}`).value !== '' ? Number(body.querySelector(`#pr-iva-pct-${producteId}`).value) : 4;
+  const bestretaInput = body.querySelector(`#pr-bestreta-${producteId}`);
+  const actualitzat = { iva_pct: ivaPct };
+  if (bestretaInput) actualitzat.import_bestreta = Number(bestretaInput.value) || 0;
+
+  const { error } = await supabase.from('gaco_liquidacio_productes').update(actualitzat).eq('id', producteId);
+  if (error) return alert(`Error desant els ajustos: ${error.message}`);
   const { data: linies } = await supabase.from('gaco_detall_liquidacio_producte').select('*').eq('producte_id', producteId);
   await recalcularProducteFruita(facturaId, tipusDocument, producteId, linies ?? []);
 }
@@ -1380,20 +1386,30 @@ async function recalcularProducteFruita(facturaId, tipusDocument, producteId, li
     else importComercial += Number(l.import) || 0;
   }
 
-  // La bestreta ja avançada es manté manual (el document de liquidació la
-  // dona feta) — no es toca aquí, només es recalcula import_net.
+  // La bestreta ja avançada i el % IVA es mantenen manuals (el document de
+  // liquidació els dona fets) — no es toquen aquí, només es recalculen
+  // base imposable, IVA i import_net a partir del que ja hi ha desat.
   const { data: producte } = await supabase
     .from('gaco_liquidacio_productes')
-    .select('import_bestreta')
+    .select('import_bestreta, iva_pct')
     .eq('id', producteId)
     .single();
 
   const bestreta = Number(producte?.import_bestreta) || 0;
-  const importNet = importComercial + importNoComercial + bestreta;
+  const ivaPct = producte?.iva_pct ?? 4;
+  const baseImposable = importComercial + importNoComercial;
+  const iva = baseImposable * (ivaPct / 100);
+  const importNet = baseImposable + iva + bestreta;
 
   const { error } = await supabase
     .from('gaco_liquidacio_productes')
-    .update({ import_comercial: importComercial, import_no_comercial: importNoComercial, import_net: importNet })
+    .update({
+      import_comercial: importComercial,
+      import_no_comercial: importNoComercial,
+      base_imposable: baseImposable,
+      iva,
+      import_net: importNet,
+    })
     .eq('id', producteId);
 
   if (error) console.error('Error actualitzant producte:', error);
@@ -1410,6 +1426,7 @@ async function desarProducteCereal(body, facturaId, tipusDocument, producteId) {
   const pctRendiment = body.querySelector(`#pc-rendiment-${producteId}`).value ? Number(body.querySelector(`#pc-rendiment-${producteId}`).value) : null;
   const despesaKg = Number(body.querySelector(`#pc-despesa-${producteId}`).value) || 0;
   const aportacioCapitalKg = Number(body.querySelector(`#pc-aportacio-${producteId}`).value) || 0;
+  const ivaPct = body.querySelector(`#pc-iva-pct-${producteId}`).value !== '' ? Number(body.querySelector(`#pc-iva-pct-${producteId}`).value) : 4;
 
   if (!kg || !preuKg) return alert('Cal indicar Kg i Preu/Kg.');
 
@@ -1417,7 +1434,7 @@ async function desarProducteCereal(body, facturaId, tipusDocument, producteId) {
   const kgNet = kg;
   const importBrut = kgNet * preuKg;
   const baseImposable = importBrut - despesaKg * kgNet;
-  const iva = baseImposable * 0.04;
+  const iva = baseImposable * (ivaPct / 100);
   const bestreta = -(aportacioCapitalKg * kgNet); // deducció, mai manual per a cereal
   const importNet = baseImposable + iva + bestreta;
 
@@ -1429,6 +1446,7 @@ async function desarProducteCereal(body, facturaId, tipusDocument, producteId) {
     despesa_kg: despesaKg,
     aportacio_capital_kg: aportacioCapitalKg,
     base_imposable: baseImposable,
+    iva_pct: ivaPct,
     iva,
     import_bestreta: bestreta,
     import_net: importNet,
@@ -1456,10 +1474,10 @@ async function recalcularCapceleraAgraria(facturaId, productes) {
   for (const p of productes) {
     if (p.tipus_calcul === 'cereal') {
       baseImposable += Number(p.base_imposable) || 0;
-      iva += Number(p.iva) || 0;
     } else {
       baseImposable += (Number(p.import_comercial) || 0) + (Number(p.import_no_comercial) || 0);
     }
+    iva += Number(p.iva) || 0; // ara també es calcula per a fruita, no només cereal
     importNet += Number(p.import_net) || 0;
   }
 
