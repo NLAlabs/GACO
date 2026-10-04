@@ -16,6 +16,7 @@ import { calcularLiquidacio, tipusVigent, diesEntre as diesPeriode } from '../fi
  */
 
 function formatImport(n) {
+  if (n === null || n === undefined) return '—';
   return n.toLocaleString('ca-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
 }
 
@@ -242,24 +243,31 @@ async function cercarPagamentsManuals(moviment) {
   const esRebuda = moviment.import < 0;
   const taula = esRebuda ? 'gaco_pagaments_factures_rebudes' : 'gaco_cobraments_factures_emeses';
   const campData = esRebuda ? 'data_pagament' : 'data_cobrament';
-  const relacio = esRebuda
-    ? 'gaco_factures_rebudes ( num_factura, data_factura, contrapart_nom, gaco_proveidors ( nom ) )'
-    : 'gaco_factures_emeses ( num_document, data_document, contrapart_nom, gaco_clients ( nom ) )';
   const des = dataMesDies(moviment.data_valor, -20);
   const fins = dataMesDies(moviment.data_valor, 20);
 
-  const { data, error } = await supabase
+  const { data: pagaments, error } = await supabase
     .from(taula)
-    .select(`id, factura_id, ${campData}, import, ${relacio}`)
+    .select(`id, factura_id, ${campData}, import`)
     .is('moviment_n43_id', null)
     .eq('import', Math.abs(moviment.import))
     .gte(campData, des)
     .lte(campData, fins);
   if (error) throw error;
+  if (!pagaments?.length) return [];
 
-  return (data ?? [])
+  // Les factures es consulten a part: encastar-les des de la taula de pagaments
+  // dóna "more than one relationship" (hi ha més d'una relació entre les dues taules).
+  const ids = [...new Set(pagaments.map((p) => p.factura_id))];
+  const { data: factures, error: errF } = esRebuda
+    ? await supabase.from('gaco_factures_rebudes').select('id, num_factura, contrapart_nom, gaco_proveidors ( nom )').in('id', ids)
+    : await supabase.from('gaco_factures_emeses').select('id, num_document, contrapart_nom, gaco_clients ( nom )').in('id', ids);
+  if (errF) throw errF;
+  const perId = new Map((factures ?? []).map((f) => [f.id, f]));
+
+  return pagaments
     .map((p) => {
-      const f = esRebuda ? p.gaco_factures_rebudes : p.gaco_factures_emeses;
+      const f = perId.get(p.factura_id);
       return {
         id: p.id,
         data: p[campData],
@@ -425,6 +433,8 @@ async function obrirModalVincularPrestec(moviment) {
     .select('id, num_quota, data_prevista, import_quota, prestec_id, estat, gaco_prestecs ( descripcio, gaco_entitats_bancaries ( nom ) )')
     .is('moviment_n43_id', null)
     .in('estat', ['pendent', 'pagada'])
+    .gte('data_prevista', dataMesDies(moviment.data_valor, -45))
+    .lte('data_prevista', dataMesDies(moviment.data_valor, 45))
     .order('data_prevista', { ascending: true })
     .limit(200);
 
@@ -442,15 +452,20 @@ async function obrirModalVincularPrestec(moviment) {
     bodyHtml: `
       <p>${formatData(moviment.data_valor)} · ${etiquetaCompte(moviment.gaco_comptes)}</p>
       <p>${moviment.concepte ?? ''}</p>
-      <div id="llista-quotes-candidates">
-        ${quotes.length ? quotes.map((q) => htmlQuotaCandidata(q, importObjectiu)).join('') : '<p>No hi ha cap quota disponible.</p>'}
-      </div>
+      <label style="display:block; font-size:13px; margin-bottom:6px;">
+        <input type="checkbox" id="mostrar-quotes-pagades" /> Mostrar també les quotes ja marcades com a pagades (per lligar un pagament antic)
+      </label>
+      <div id="llista-quotes-candidates">${htmlLlistaQuotes(quotes, false, importObjectiu)}</div>
       <button type="button" id="btn-confirmar-vincle-prestec" disabled>Vincular</button>
     `,
     onMount: (bodyEl) => {
       const btnConfirmar = bodyEl.querySelector('#btn-confirmar-vincle-prestec');
       bodyEl.addEventListener('change', (e) => {
         if (e.target.name === 'quota-candidata') btnConfirmar.disabled = false;
+        if (e.target.id === 'mostrar-quotes-pagades') {
+          bodyEl.querySelector('#llista-quotes-candidates').innerHTML = htmlLlistaQuotes(quotes, e.target.checked, importObjectiu);
+          btnConfirmar.disabled = true; // la selecció anterior desapareix amb la llista
+        }
       });
       btnConfirmar.addEventListener('click', async () => {
         const seleccionada = bodyEl.querySelector('input[name="quota-candidata"]:checked');
@@ -461,6 +476,15 @@ async function obrirModalVincularPrestec(moviment) {
       });
     },
   });
+}
+
+function htmlLlistaQuotes(quotes, mostrarPagades, importObjectiu) {
+  const visibles = mostrarPagades ? quotes : quotes.filter((q) => q.estat === 'pendent');
+  if (visibles.length) return visibles.map((q) => htmlQuotaCandidata(q, importObjectiu)).join('');
+  const hiHaPagades = quotes.some((q) => q.estat === 'pagada');
+  return mostrarPagades || !hiHaPagades
+    ? "<p>No hi ha cap quota sense moviment a ±45 dies d'aquesta data.</p>"
+    : "<p>Cap quota pendent a ±45 dies. Marca la casella per veure les ja pagades.</p>";
 }
 
 function htmlQuotaCandidata(q, importObjectiu) {
@@ -520,6 +544,15 @@ async function vincularPrestec(moviment, quotaId) {
         .update({ capital_pendent: +(prestec.capital_pendent - quota.import_capital).toFixed(2) })
         .eq('id', quota.prestec_id);
     }
+  }
+
+  // Quota sense desglossament (p. ex. préstec a curt termini amb un sol venciment):
+  // no s'ha pogut descomptar capital. Cal avisar, perquè no es veuria enlloc.
+  if (!jaEstavaPagada && quota.import_capital === null) {
+    alert(
+      'Vinculat, però aquesta quota no té desglossament de capital: el capital pendent del préstec NO s\'ha actualitzat. ' +
+        'Ajusta el capital que amortitza a Finançament → Préstecs → Veure quotes → Ajustar detall, i el capital pendent del préstec a Editar.'
+    );
   }
 
   const { error: errMoviment } = await supabase
