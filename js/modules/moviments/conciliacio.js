@@ -1,5 +1,6 @@
 import { supabase } from '../../lib/supabaseClient.js';
 import { openModal, closeModal } from '../../lib/modal.js';
+import { calcularLiquidacio, tipusVigent, diesEntre as diesPeriode } from '../financament/polisses.js';
 
 /**
  * Conciliació bancària.
@@ -731,6 +732,7 @@ function obrirModalQueEs(m) {
   const esCarrec = m.import < 0;
   const opcions = esCarrec
     ? [
+        ...(m.gaco_comptes?.tipus === 'credit' ? [['liquidacio-polissa', 'Liquidació trimestral de la pòlissa (interessos + comissions)']] : []),
         ['factura', "Pagament d'una factura o despesa ja registrada"],
         ['nova-despesa', 'Nova despesa (comissió bancària, taxa...)'],
         ['prestec', 'Quota de préstec'],
@@ -778,6 +780,8 @@ function obrirModalQueEs(m) {
               return obrirModalTraspasManual(m);
             case 'sense-factura':
               return obrirModalClassificar(m);
+            case 'liquidacio-polissa':
+              return obrirModalLiquidacioPolissa(m);
           }
         });
       });
@@ -906,6 +910,254 @@ async function crearDespesaDesDeMoviment(m, d) {
   }
 
   // Reaprofita el flux normal: pagament amb moviment_n43_id, recàlcul d'estat i moviment conciliat.
+  await vincular(m, factura.id);
+}
+
+// --- Liquidació trimestral d'una pòlissa de crèdit ---
+// Crea gaco_liquidacions_polissa (amb el detall del càlcul) + una despesa a
+// gaco_factures_rebudes (proveïdor = banc, IVA 0, una línia per concepte) i
+// concilia el moviment. Si ja hi havia la liquidació del mateix final de
+// període registrada a mà (sense moviment), la completa en lloc de duplicar-la.
+
+function dataMesDies(dataStr, dies) {
+  const d = new Date(dataStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + dies);
+  return d.toISOString().slice(0, 10);
+}
+
+async function obrirModalLiquidacioPolissa(m) {
+  const [{ data: condData }, { data: revisions }, { data: ultimes }, { data: proveidors }, { data: conceptes }] = await Promise.all([
+    supabase.from('gaco_polisses_condicions').select('*').eq('compte_id', m.compte_id).order('data_formalitzacio', { ascending: false }).limit(1),
+    supabase.from('gaco_polisses_revisions_interes').select('*').eq('compte_id', m.compte_id),
+    supabase.from('gaco_liquidacions_polissa').select('periode_fi').eq('compte_polissa_id', m.compte_id).not('periode_fi', 'is', null).lt('periode_fi', dataMesDies(m.data_valor, -1)).order('periode_fi', { ascending: false }).limit(1),
+    supabase.from('gaco_proveidors').select('id, nom').eq('actiu', true).order('nom'),
+    supabase.from('gaco_conceptes_comptables').select('id, grup, nom').eq('actiu', true).eq('tipus', 'despesa').order('grup').order('nom'),
+  ]);
+  const cond = condData?.[0];
+  if (!cond) {
+    alert('Aquesta pòlissa no té condicions registrades. Afegeix-les a Finançament → Pòlisses → Condicions.');
+    return;
+  }
+
+  const totalMov = Math.abs(m.import);
+  const fiDef = dataMesDies(m.data_valor, -1);
+  const iniciDef = ultimes?.[0]?.periode_fi ? dataMesDies(ultimes[0].periode_fi, 1) : '';
+  const nomBanc = m.gaco_comptes?.gaco_entitats_bancaries?.nom ?? '';
+  const opcionsConcepte = (conceptes ?? []).map((c) => `<option value="${c.id}">${c.grup} — ${c.nom}</option>`).join('');
+
+  openModal({
+    title: `Liquidació de pòlissa de ${formatImport(totalMov)}`,
+    wide: true,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <div class="modal-section">
+        <label>Inici del període <input type="date" id="lp-inici" value="${iniciDef}" /></label>
+        <label>Fi del període <input type="date" id="lp-fi" value="${fiDef}" /></label>
+        <label>Números deure (de l'extracte) <input type="number" step="0.01" id="lp-numeros" /></label>
+        <label>Tipus nominal (%) <input type="number" step="0.001" id="lp-tipus" /></label>
+        <label>TAE (informatiu) <input type="number" step="0.001" id="lp-tae" /></label>
+        <button type="button" id="btn-lp-precalcular">Precalcular imports</button>
+      </div>
+      <div class="modal-section">
+        <label>Interessos <input type="number" step="0.01" id="lp-interessos" /></label>
+        <label>Excedits <input type="number" step="0.01" id="lp-excedits" value="0" /></label>
+        <label>Comissió de no disposat <input type="number" step="0.01" id="lp-comissio" /></label>
+        <p id="lp-quadre" style="font-size:13px;"></p>
+      </div>
+      <div class="modal-section">
+        <label>Proveïdor (o nom lliure)
+          <input type="text" id="lp-proveidor" list="dl-lp-proveidors" value="${nomBanc.replace(/"/g, '&quot;')}" />
+          <datalist id="dl-lp-proveidors">${(proveidors ?? []).map((p) => `<option value="${p.nom}"></option>`).join('')}</datalist>
+        </label>
+        <label>Concepte dels interessos (i excedits)
+          <select id="lp-concepte-int"><option value="">Selecciona...</option>${opcionsConcepte}</select></label>
+        <label>Concepte de les comissions
+          <select id="lp-concepte-com"><option value="">Selecciona...</option>${opcionsConcepte}</select></label>
+        <label>Activitat
+          <select id="lp-activitat">
+            <option value="comuna">Comuna</option>
+            <option value="fruita_cereal">Fruita/cereal</option>
+            <option value="serveis">Serveis</option>
+          </select></label>
+      </div>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">
+        Es crea la liquidació, una despesa a Factures rebudes amb una línia per concepte (IVA 0%) i es concilia aquest moviment.
+      </p>
+      <button type="button" id="btn-lp-crear">Crear i conciliar</button>
+    `,
+    onMount: (body) => {
+      const g = (id) => body.querySelector(id).value;
+      const num = (id) => (g(id) === '' ? null : parseFloat(g(id)));
+
+      const pintar = () => {
+        const suma = Math.round(((num('#lp-interessos') ?? 0) + (num('#lp-excedits') ?? 0) + (num('#lp-comissio') ?? 0)) * 100) / 100;
+        const ok = Math.abs(suma - totalMov) < 0.005;
+        body.querySelector('#lp-quadre').innerHTML = `Suma de components: ${formatImport(suma)} · Moviment: ${formatImport(totalMov)} ${
+          ok ? '✔' : `<strong style="color:#b00020;">⚠ diferència ${formatImport(Math.round((suma - totalMov) * 100) / 100)}</strong>`
+        }`;
+      };
+      ['#lp-interessos', '#lp-excedits', '#lp-comissio'].forEach((id) => body.querySelector(id).addEventListener('input', pintar));
+
+      body.querySelector('#btn-lp-precalcular').addEventListener('click', () => {
+        const inici = g('#lp-inici');
+        const fi = g('#lp-fi');
+        const numeros = num('#lp-numeros');
+        if (!inici || !fi || numeros === null) return alert('Cal indicar inici, fi i números deure.');
+        if (g('#lp-tipus') === '') {
+          const tv = tipusVigent(revisions ?? [], inici);
+          if (tv !== null) body.querySelector('#lp-tipus').value = tv;
+        }
+        const tipus = num('#lp-tipus');
+        if (tipus === null) return alert('No hi ha tipus vigent: indica el tipus nominal.');
+        const t = calcularLiquidacio({
+          numeros,
+          dies: diesPeriode(inici, fi),
+          tipusPct: tipus,
+          limit: Number(cond.limit_import),
+          comissioPct: Number(cond.comissio_disponibilitat_pct),
+        });
+        body.querySelector('#lp-interessos').value = t.interessos;
+        body.querySelector('#lp-comissio').value = t.comissio;
+        pintar();
+      });
+      pintar();
+
+      body.querySelector('#btn-lp-crear').addEventListener('click', async () => {
+        const inici = g('#lp-inici');
+        const fi = g('#lp-fi');
+        const interessos = num('#lp-interessos') ?? 0;
+        const excedits = num('#lp-excedits') ?? 0;
+        const comissio = num('#lp-comissio') ?? 0;
+        const nom = g('#lp-proveidor').trim();
+        const concepteInt = g('#lp-concepte-int');
+        const concepteCom = g('#lp-concepte-com');
+        if (!inici || !fi || fi < inici) return alert('Cal indicar un període vàlid.');
+        if (Math.abs(interessos + excedits + comissio - totalMov) >= 0.005) return alert('La suma de components ha de coincidir amb el moviment.');
+        if (!nom) return alert('Cal indicar un proveïdor o un nom.');
+        if ((interessos + excedits > 0 && !concepteInt) || (comissio > 0 && !concepteCom)) return alert('Cal triar el concepte de cada import.');
+        const prov = (proveidors ?? []).find((p) => p.nom.toLowerCase() === nom.toLowerCase());
+        body.querySelector('#btn-lp-crear').disabled = true;
+        const numeros = num('#lp-numeros');
+        const dies = diesPeriode(inici, fi);
+        await confirmarLiquidacioPolissa(m, {
+          inici, fi, dies, numeros,
+          saldoMitja: numeros !== null ? Math.round(((numeros * 100) / dies) * 100) / 100 : null,
+          tipus: num('#lp-tipus'), tae: num('#lp-tae'),
+          interessos, excedits, comissio,
+          proveidorId: prov?.id ?? null, proveidorNom: nom,
+          concepteInt, concepteCom, activitat: g('#lp-activitat'),
+        });
+      });
+    },
+  });
+}
+
+async function confirmarLiquidacioPolissa(m, d) {
+  const total = Math.abs(m.import);
+
+  // Liquidació ja registrada a mà amb el mateix final de període?
+  const { data: existents } = await supabase
+    .from('gaco_liquidacions_polissa')
+    .select('id, moviment_n43_id')
+    .eq('compte_polissa_id', m.compte_id)
+    .eq('periode_fi', d.fi);
+  const existent = existents?.[0] ?? null;
+  if (existent?.moviment_n43_id) {
+    alert('Aquesta liquidació (mateix final de període) ja està conciliada amb un altre moviment.');
+    closeModal();
+    return;
+  }
+
+  const descripcioPeriode = `${formatData(d.inici)} - ${formatData(d.fi)}`;
+  const { data: factura, error } = await supabase
+    .from('gaco_factures_rebudes')
+    .insert({
+      tipus_factura: 'despesa',
+      proveidor_id: d.proveidorId,
+      contrapart_nom: d.proveidorId ? null : d.proveidorNom,
+      num_factura: null,
+      data_factura: m.data_valor,
+      data_recepcio: m.data_valor,
+      activitat: d.activitat,
+      exercici: Number(m.data_valor.slice(0, 4)),
+      imprevist: false,
+      confirming_id: null,
+      base_imposable: total,
+      iva: 0,
+      suplits: 0,
+      total,
+      import_pagat: 0,
+      import_pendent: total,
+      estat: 'pendent',
+      forma_pagament: 'compte_bancari',
+      compte_bancari_id: m.compte_id,
+    })
+    .select('id')
+    .single();
+  if (error) {
+    alert('Error creant la despesa: ' + error.message);
+    return;
+  }
+
+  const linia = (concepteId, descripcio, import_) => ({
+    factura_id: factura.id,
+    categoria_id: concepteId,
+    descripcio,
+    quantitat: 1,
+    preu_unitari: import_,
+    descompte_pct: null,
+    import_base: import_,
+    import_descompte: null,
+    total_linia: import_,
+    iva_pct: 0,
+    iva: 0,
+    proveidor_suplit_id: null,
+    immobilitzat_id: null,
+  });
+  const linies = [];
+  if (d.interessos > 0) linies.push(linia(d.concepteInt, `Interessos pòlissa ${descripcioPeriode}`, d.interessos));
+  if (d.excedits > 0) linies.push(linia(d.concepteInt, `Interessos d'excedits pòlissa ${descripcioPeriode}`, d.excedits));
+  if (d.comissio > 0) linies.push(linia(d.concepteCom, `Comissió de no disponibilitat ${descripcioPeriode}`, d.comissio));
+
+  const desfer = async () => {
+    await supabase.from('gaco_detall_factures_rebudes').delete().eq('factura_id', factura.id);
+    await supabase.from('gaco_factures_rebudes').delete().eq('id', factura.id);
+  };
+
+  const { error: errLinies } = await supabase.from('gaco_detall_factures_rebudes').insert(linies);
+  if (errLinies) {
+    await desfer();
+    alert('Error creant les línies de la despesa: ' + errLinies.message);
+    return;
+  }
+
+  const registre = {
+    compte_polissa_id: m.compte_id,
+    moviment_n43_id: m.id,
+    factura_rebuda_id: factura.id,
+    data: m.data_valor,
+    periode_inici: d.inici,
+    periode_fi: d.fi,
+    dies: d.dies,
+    numeros_deure: d.numeros,
+    saldo_mitja: d.saldoMitja,
+    tipus_nominal_pct: d.tipus,
+    tae_pct: d.tae,
+    import_interessos: d.interessos,
+    import_excedits: d.excedits,
+    import_comissio_no_disposat: d.comissio,
+    import_total: total,
+  };
+  const { error: errLiq } = existent
+    ? await supabase.from('gaco_liquidacions_polissa').update(registre).eq('id', existent.id)
+    : await supabase.from('gaco_liquidacions_polissa').insert(registre);
+  if (errLiq) {
+    await desfer();
+    alert('Error desant la liquidació: ' + errLiq.message);
+    return;
+  }
+
+  // Flux normal: pagament amb moviment_n43_id, recàlcul d'estat i moviment conciliat.
   await vincular(m, factura.id);
 }
 
