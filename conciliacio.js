@@ -929,7 +929,7 @@ async function obrirModalLiquidacioPolissa(m) {
   const [{ data: condData }, { data: revisions }, { data: ultimes }, { data: proveidors }, { data: conceptes }] = await Promise.all([
     supabase.from('gaco_polisses_condicions').select('*').eq('compte_id', m.compte_id).order('data_formalitzacio', { ascending: false }).limit(1),
     supabase.from('gaco_polisses_revisions_interes').select('*').eq('compte_id', m.compte_id),
-    supabase.from('gaco_liquidacions_polissa').select('periode_fi').eq('compte_polissa_id', m.compte_id).not('periode_fi', 'is', null).lt('periode_fi', m.data_valor).order('periode_fi', { ascending: false }).limit(1),
+    supabase.from('gaco_liquidacions_polissa').select('periode_fi').eq('compte_polissa_id', m.compte_id).not('periode_fi', 'is', null).lt('periode_fi', dataMesDies(m.data_valor, -1)).order('periode_fi', { ascending: false }).limit(1),
     supabase.from('gaco_proveidors').select('id, nom').eq('actiu', true).order('nom'),
     supabase.from('gaco_conceptes_comptables').select('id, grup, nom').eq('actiu', true).eq('tipus', 'despesa').order('grup').order('nom'),
   ]);
