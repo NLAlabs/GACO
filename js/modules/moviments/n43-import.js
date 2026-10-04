@@ -42,11 +42,15 @@ async function resoldreCompteId({ claveEntidad, claveOficina, numCuenta }) {
  * l'anterior. Si no coincideix, hi ha un buit (o un solapament) de dies
  * sense importar entre totes dues — es marca com a avís, no es bloqueja.
  */
-async function comprovarContinuitat(compteId, saldoInicialNou) {
+async function comprovarContinuitat(compteId, saldoInicialNou, dataInicialNova) {
+  // Només compta la tanda que acaba ABANS d'aquesta: si s'importa un període
+  // anterior a les tandes ja gravades, la "darrera per data_final" és una tanda
+  // posterior i donaria un fals avís de salt.
   const { data: anterior } = await supabase
     .from('gaco_importacions_n43')
     .select('data_final, saldo_final, saldo_calculat')
     .eq('compte_id', compteId)
+    .lte('data_final', dataInicialNova)
     .order('data_final', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -62,6 +66,34 @@ async function comprovarContinuitat(compteId, saldoInicialNou) {
       `Probablement falten dies per importar entremig.`;
 
   return { continuaAnterior, avis };
+}
+
+/**
+ * Si aquesta tanda s'importa per ompliar un buit o un període anterior, ha
+ * d'enllaçar amb la tanda posterior ja gravada: el seu saldo_final ha de
+ * coincidir amb el saldo_inicial de la següent. Retorna també l'id de la
+ * següent perquè se n'actualitzi continua_anterior un cop gravada aquesta.
+ */
+async function comprovarContinuitatSeguent(compteId, saldoFinalNou, dataFinalNova) {
+  const { data: seguent } = await supabase
+    .from('gaco_importacions_n43')
+    .select('id, data_inicial, saldo_inicial')
+    .eq('compte_id', compteId)
+    .gte('data_inicial', dataFinalNova)
+    .order('data_inicial', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (!seguent || saldoFinalNou === null || saldoFinalNou === undefined) {
+    return { seguentId: null, continua: null, avis: null };
+  }
+  const continua = Math.abs(saldoFinalNou - seguent.saldo_inicial) < 0.005;
+  const avis = continua
+    ? null
+    : `El saldo final d'aquesta importació (${formatImport(saldoFinalNou)}) no coincideix amb el saldo inicial ` +
+      `de la importació següent ja gravada (${formatImport(seguent.saldo_inicial)}, des de ${formatData(seguent.data_inicial)}). ` +
+      `Probablement falten dies per importar entremig.`;
+  return { seguentId: seguent.id, continua, avis };
 }
 
 /**
@@ -108,10 +140,17 @@ async function handleFileUpload(event) {
   const targetesHtml = [];
 
   for (const resultat of resultatsPerCompte) {
-    const { continuaAnterior, avis: avisContinuitat } = await comprovarContinuitat(
+    const { continuaAnterior, avis: avisAnterior } = await comprovarContinuitat(
       resultat.compteId,
-      resultat.saldoInicial
+      resultat.saldoInicial,
+      resultat.dataInicial
     );
+    const seguent = await comprovarContinuitatSeguent(
+      resultat.compteId,
+      resultat.saldoFinal ?? resultat.saldoCalculat,
+      resultat.dataFinal
+    );
+    const avisContinuitat = [avisAnterior, seguent.avis].filter(Boolean).join(' ') || null;
     const possiblesManuals = await cercarPossiblesDuplicatsManual(resultat.compteId, resultat.moviments);
 
     const { data: importacio, error: errImportacio } = await supabase
@@ -151,6 +190,11 @@ async function handleFileUpload(event) {
         `<div class="card"><p class="error">Compte ${resultat.numCuenta}: error gravant els moviments — ${errMoviments.message}</p></div>`
       );
       continue;
+    }
+
+    // La tanda posterior ja gravada ara té predecessora: refresca el seu indicador.
+    if (seguent.seguentId) {
+      await supabase.from('gaco_importacions_n43').update({ continua_anterior: seguent.continua }).eq('id', seguent.seguentId);
     }
 
     targetesHtml.push(htmlResumCompte(resultat, avisContinuitat, possiblesManuals));

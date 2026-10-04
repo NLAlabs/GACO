@@ -232,10 +232,76 @@ function htmlCandidata(c, importObjectiu) {
   `;
 }
 
+// --- Pagaments/cobraments ja registrats a mà (sense moviment) ---
+// Quan s'han introduït factures amb el pagament manual abans d'importar el N43,
+// el moviment no s'ha de crear com a pagament nou (duplicaria l'import): només
+// cal enllaçar-lo al pagament existent. Coincidència: import exacte, sense
+// moviment_n43_id, i data a ±20 dies de la data valor.
+
+async function cercarPagamentsManuals(moviment) {
+  const esRebuda = moviment.import < 0;
+  const taula = esRebuda ? 'gaco_pagaments_factures_rebudes' : 'gaco_cobraments_factures_emeses';
+  const campData = esRebuda ? 'data_pagament' : 'data_cobrament';
+  const relacio = esRebuda
+    ? 'gaco_factures_rebudes ( num_factura, data_factura, contrapart_nom, gaco_proveidors ( nom ) )'
+    : 'gaco_factures_emeses ( num_document, data_document, contrapart_nom, gaco_clients ( nom ) )';
+  const des = dataMesDies(moviment.data_valor, -20);
+  const fins = dataMesDies(moviment.data_valor, 20);
+
+  const { data, error } = await supabase
+    .from(taula)
+    .select(`id, factura_id, ${campData}, import, ${relacio}`)
+    .is('moviment_n43_id', null)
+    .eq('import', Math.abs(moviment.import))
+    .gte(campData, des)
+    .lte(campData, fins);
+  if (error) throw error;
+
+  return (data ?? [])
+    .map((p) => {
+      const f = esRebuda ? p.gaco_factures_rebudes : p.gaco_factures_emeses;
+      return {
+        id: p.id,
+        data: p[campData],
+        import: p.import,
+        nom: (esRebuda ? f?.gaco_proveidors?.nom : f?.gaco_clients?.nom) || f?.contrapart_nom || '(sense nom)',
+        num: esRebuda ? f?.num_factura : f?.num_document,
+      };
+    })
+    .sort((a, b) => diesEntre(a.data, moviment.data_valor) - diesEntre(b.data, moviment.data_valor));
+}
+
+async function enllacarPagamentExistent(moviment, pagamentId) {
+  const esRebuda = moviment.import < 0;
+  const taula = esRebuda ? 'gaco_pagaments_factures_rebudes' : 'gaco_cobraments_factures_emeses';
+  const campData = esRebuda ? 'data_pagament' : 'data_cobrament';
+
+  const { error } = await supabase
+    .from(taula)
+    .update({ moviment_n43_id: moviment.id, compte_bancari_id: moviment.compte_id, [campData]: moviment.data_valor })
+    .eq('id', pagamentId)
+    .is('moviment_n43_id', null); // no trepitjar un enllaç fet entremig
+  if (error) {
+    alert('Error enllaçant el pagament: ' + error.message);
+    return;
+  }
+
+  // L'import no canvia, per tant l'estat de la factura tampoc: no cal recalcular.
+  const { error: errMov } = await supabase
+    .from('gaco_moviments_n43')
+    .update({ estat: 'conciliat', tipus_moviment: esRebuda ? 'fra_rebuda' : 'fra_emesa' })
+    .eq('id', moviment.id);
+  if (errMov) alert('Enllaçat, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMov.message);
+
+  closeModal();
+  render();
+}
+
 async function obrirModalVincular(moviment) {
   let candidates;
+  let manuals = [];
   try {
-    candidates = await cercarFacturesCandidates(moviment);
+    [candidates, manuals] = await Promise.all([cercarFacturesCandidates(moviment), cercarPagamentsManuals(moviment)]);
   } catch (err) {
     alert('Error cercant factures: ' + err.message);
     return;
@@ -250,6 +316,24 @@ async function obrirModalVincular(moviment) {
     bodyHtml: `
       <p>${formatData(moviment.data_valor)} · ${etiquetaCompte(moviment.gaco_comptes)}</p>
       <p>${moviment.concepte ?? ''}</p>
+      ${
+        manuals.length
+          ? `<div class="modal-section">
+              <p class="modal-section-title">Ja el tens registrat a mà (import exacte, sense moviment)</p>
+              ${manuals
+                .map(
+                  (p) => `<label style="display:block; cursor:pointer; margin-bottom:4px;">
+                    <input type="radio" name="pagament-manual" value="${p.id}" />
+                    <strong>${p.nom}</strong>${p.num ? ' · ' + p.num : ''} — pagament del ${formatData(p.data)} · ${formatImport(p.import)}
+                  </label>`
+                )
+                .join('')}
+              <button type="button" id="btn-enllacar-manual" disabled>Enllaçar a aquest pagament</button>
+              <p style="font-size:12px; color: var(--gaco-text-secondary);">No crea cap pagament nou: només hi enllaça el moviment bancari.</p>
+            </div>
+            <p class="modal-section-title">O bé, una factura oberta:</p>`
+          : ''
+      }
       <div class="modal-section">
         <input type="text" id="cerca-factura" placeholder="Filtrar per nom o número..." style="width:100%; padding:8px;" />
       </div>
@@ -275,7 +359,19 @@ async function obrirModalVincular(moviment) {
 
       bodyEl.addEventListener('change', (e) => {
         if (e.target.name === 'factura-candidata') btnConfirmar.disabled = false;
+        if (e.target.name === 'pagament-manual') bodyEl.querySelector('#btn-enllacar-manual').disabled = false;
       });
+
+      const btnManual = bodyEl.querySelector('#btn-enllacar-manual');
+      if (btnManual) {
+        btnManual.addEventListener('click', async () => {
+          const sel = bodyEl.querySelector('input[name="pagament-manual"]:checked');
+          if (!sel) return;
+          btnManual.disabled = true;
+          btnManual.textContent = 'Enllaçant...';
+          await enllacarPagamentExistent(moviment, sel.value);
+        });
+      }
 
       btnConfirmar.addEventListener('click', async () => {
         const seleccionada = bodyEl.querySelector('input[name="factura-candidata"]:checked');
