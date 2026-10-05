@@ -11,6 +11,7 @@ const TIPUS = {
   avancament_factura: { label: 'Avançament de factura (el soci paga una despesa de la SL)', signe: 1 },
   compensacio_factura: { label: 'Compensació de factura (factura del soci liquidada contra el saldo)', signe: 1 },
   transferencia_a_soci: { label: 'Transferència de la SL (préstec o entrega de diners)', signe: -1 },
+  transferencia_de_soci: { label: 'Transferència a la SL (el soci aporta o retorna diners)', signe: 1 },
   saldo_obertura: { label: "Saldo d'obertura (el de la gestoria)", signe: 0 },
   ajust: { label: 'Ajust', signe: 0 },
 };
@@ -138,6 +139,7 @@ function pintar() {
       <p><strong>${TITOL_SOCIS}:</strong> ${textSocis}</p>
       <p><strong>${TITOL_VINCULAT}:</strong> ${textVinc}</p>
       <p><strong>${textNet}</strong></p>
+      <button type="button" id="btn-nova-persona">+ Afegir persona</button>
       <p style="font-size:13px; color: var(--gaco-text-secondary);">
         Saldo positiu = la SL deu a la persona · negatiu = la persona deu a la SL (comptes 551/555). Els saldos es calculen dels apunts.
       </p>
@@ -155,6 +157,7 @@ function pintar() {
   contenidor.querySelectorAll('[data-extracte]').forEach((b) => b.addEventListener('click', () => obrirExtracte(b.dataset.extracte)));
   contenidor.querySelectorAll('[data-apunt]').forEach((b) => b.addEventListener('click', () => obrirNouApunt(b.dataset.apunt)));
   contenidor.querySelectorAll('[data-quadre]').forEach((b) => b.addEventListener('click', () => obrirQuadre(b.dataset.quadre)));
+  contenidor.querySelector('#btn-nova-persona').addEventListener('click', obrirNovaPersona);
   contenidor.querySelectorAll('[data-lligar]').forEach((b) => b.addEventListener('click', () => obrirLligarProveidor(b.dataset.lligar)));
   contenidor.querySelectorAll('[data-compensar]').forEach((b) => b.addEventListener('click', () => obrirCompensar(b.dataset.compensar)));
 }
@@ -489,4 +492,40 @@ async function compensarFactura(soci, f, data) {
     return false;
   }
   return true;
+}
+
+// --- Alta d'una persona (soci o vinculat) ---------------------------------------
+
+function obrirNovaPersona() {
+  openModal({
+    title: 'Afegir persona',
+    bodyHtml: `
+      <div class="modal-section">
+        <label>Nom <input type="text" id="np-nom" /></label>
+        <label>NIF <input type="text" id="np-nif" /></label>
+        <label>Tipus
+          <select id="np-tipus">
+            <option value="soci">Soci (fill, mare...)</option>
+            <option value="vinculat">Vinculat (RNA, pare)</option>
+          </select>
+        </label>
+      </div>
+      <button type="button" id="btn-desar-persona">Desar</button>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-desar-persona').addEventListener('click', async () => {
+        const nom = body.querySelector('#np-nom').value.trim();
+        if (!nom) return alert('Cal indicar el nom.');
+        const { error } = await supabase.from('gaco_socis').insert({
+          nom,
+          nif: body.querySelector('#np-nif').value.trim() || null,
+          tipus: body.querySelector('#np-tipus').value,
+          actiu: true,
+        });
+        if (error) return alert('Error desant: ' + error.message);
+        closeModal();
+        render();
+      });
+    },
+  });
 }
