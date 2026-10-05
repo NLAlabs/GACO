@@ -557,6 +557,7 @@ function htmlSeccioD() {
         ${camp('Import (€)', `<input type="number" step="0.01" id="pg-import" required style="width:120px;" />`)}
         ${camp('Tipus', `<select id="pg-tipus"><option value="pagament">Pagament</option><option value="devolucio">Devolució</option></select>`)}
         ${camp('Compte (opcional)', `<select id="pg-compte"><option value="">Selecciona...</option>${comptesCache.map((c) => `<option value="${c.id}">${c.entitatNom} · ${c.descripcio ?? c.num_compte}</option>`).join('')}</select>`)}
+        ${camp('Pagat per un soci (opcional)', `<select id="pg-soci"><option value="">No (banc o efectiu)</option>${socisCache.map((sc) => `<option value="${sc.id}">${sc.nom}</option>`).join('')}</select>`)}
         ${camp('Notes', `<input type="text" id="pg-notes" style="min-width:160px;" />`)}
         <button type="submit">Registrar pagament</button>
       </form>
@@ -920,7 +921,7 @@ async function carregarPagaments(body, facturaId) {
       <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:0.5px solid var(--gaco-border); font-size:13px;">
         <div>
           ${formatData(p.data_pagament)} · ${p.tipus_moviment === 'devolucio' ? 'Devolució' : 'Pagament'}
-          ${p.compte ? ` · ${p.compte.descripcio ?? p.compte.num_compte}` : ' · manual'}
+          ${p.soci_id ? ` · avançat per ${socisCache.find((sc) => sc.id === p.soci_id)?.nom ?? 'un soci'}` : p.compte ? ` · ${p.compte.descripcio ?? p.compte.num_compte}` : ' · manual'}
           ${p.notes ? ` — ${p.notes}` : ''}
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
@@ -948,20 +949,45 @@ async function altaPagament(e, body, facturaId) {
   const tipusMoviment = body.querySelector('#pg-tipus').value;
   const compteId = body.querySelector('#pg-compte').value || null;
   const notes = body.querySelector('#pg-notes').value.trim() || null;
+  const sociId = body.querySelector('#pg-soci').value || null;
 
   if (!dataPagament || !importIntroduit) return alert('Cal indicar data i import.');
+  if (sociId && tipusMoviment === 'devolucio') return alert('Una devolució no es pot registrar com a pagament d\'un soci.');
 
   const importAmbSigne = tipusMoviment === 'devolucio' ? -Math.abs(importIntroduit) : Math.abs(importIntroduit);
 
-  const { error } = await supabase.from('gaco_pagaments_factures_rebudes').insert({
-    factura_id: facturaId,
-    data_pagament: dataPagament,
-    import: importAmbSigne,
-    tipus_moviment: tipusMoviment,
-    compte_bancari_id: compteId,
-    notes,
-  });
+  const { data: pagament, error } = await supabase
+    .from('gaco_pagaments_factures_rebudes')
+    .insert({
+      factura_id: facturaId,
+      data_pagament: dataPagament,
+      import: importAmbSigne,
+      tipus_moviment: tipusMoviment,
+      compte_bancari_id: sociId ? null : compteId,
+      soci_id: sociId,
+      notes,
+    })
+    .select('id')
+    .single();
   if (error) return alert(`Error registrant el pagament: ${error.message}`);
+
+  // Pagat amb diners d'un soci: la factura queda pagada i la SL passa a deure-li l'import
+  // (apunt positiu al compte corrent del soci, tipus 'avancament_factura').
+  if (sociId) {
+    const { data: cap } = await supabase.from('gaco_factures_rebudes').select('num_factura').eq('id', facturaId).single();
+    const { error: errA } = await supabase.from('gaco_socis_compte_corrent').insert({
+      soci_id: sociId,
+      data: dataPagament,
+      concepte: `Avançament factura ${cap?.num_factura ?? ''}`.trim(),
+      tipus_moviment: 'avancament_factura',
+      import: Math.abs(importIntroduit),
+      factura_id: facturaId,
+    });
+    if (errA) {
+      await supabase.from('gaco_pagaments_factures_rebudes').delete().eq('id', pagament.id);
+      return alert(`No s'ha pogut registrar l'apunt al compte del soci (has executat schema_socis.sql?): ${errA.message}`);
+    }
+  }
 
   e.target.reset();
   await carregarPagaments(body, facturaId);
@@ -969,8 +995,27 @@ async function altaPagament(e, body, facturaId) {
 
 async function eliminarPagament(pagamentId, body, facturaId) {
   if (!confirm('Eliminar aquest pagament?')) return;
+  const { data: pag } = await supabase
+    .from('gaco_pagaments_factures_rebudes')
+    .select('soci_id, import, data_pagament, factura_id')
+    .eq('id', pagamentId)
+    .single();
   const { error } = await supabase.from('gaco_pagaments_factures_rebudes').delete().eq('id', pagamentId);
   if (error) return alert(`Error eliminant el pagament: ${error.message}`);
+
+  // Si el pagava un soci, es desfà també l'apunt corresponent del seu compte corrent.
+  if (pag?.soci_id) {
+    const { data: apunts } = await supabase
+      .from('gaco_socis_compte_corrent')
+      .select('id')
+      .eq('soci_id', pag.soci_id)
+      .eq('factura_id', pag.factura_id)
+      .eq('tipus_moviment', 'avancament_factura')
+      .eq('import', pag.import)
+      .eq('data', pag.data_pagament)
+      .limit(1);
+    if (apunts?.length) await supabase.from('gaco_socis_compte_corrent').delete().eq('id', apunts[0].id);
+  }
   await carregarPagaments(body, facturaId);
 }
 
