@@ -246,13 +246,16 @@ async function cercarPagamentsManuals(moviment) {
   const des = dataMesDies(moviment.data_valor, -20);
   const fins = dataMesDies(moviment.data_valor, 20);
 
-  const { data: pagaments, error } = await supabase
+  let consulta = supabase
     .from(taula)
     .select(`id, factura_id, ${campData}, import`)
     .is('moviment_n43_id', null)
     .eq('import', Math.abs(moviment.import))
     .gte(campData, des)
     .lte(campData, fins);
+  // Els pagaments d'un soci (compensacions amb el compte corrent) no han passat pel banc.
+  if (esRebuda) consulta = consulta.is('soci_id', null);
+  const { data: pagaments, error } = await consulta;
   if (error) throw error;
   if (!pagaments?.length) return [];
 
