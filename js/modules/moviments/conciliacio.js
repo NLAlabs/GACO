@@ -870,12 +870,14 @@ function obrirModalQueEs(m) {
         ['prestec', 'Quota de préstec'],
         ['amortitzacio', 'Amortització extraordinària de préstec'],
         ['traspas', 'Traspàs a un altre compte propi'],
-        ['sense-factura', 'Sense factura (reintegrament de soci, altres)'],
+        ['soci', 'Moviment amb un soci o RNA (compte 555)'],
+        ['sense-factura', 'Sense factura (altres)'],
       ]
     : [
         ['factura', "Cobrament d'una factura emesa"],
         ['retrocessio', "Retrocessió d'una despesa ja pagada (comissió, etc.)"],
         ['traspas', "Traspàs des d'un altre compte propi"],
+        ['soci', 'Moviment amb un soci o RNA (compte 555)'],
         ['sense-factura', 'Ingrés sense despesa relacionada (ajut o subvenció, altres)'],
       ];
 
@@ -914,6 +916,8 @@ function obrirModalQueEs(m) {
               return obrirModalClassificar(m);
             case 'liquidacio-polissa':
               return obrirModalLiquidacioPolissa(m);
+            case 'soci':
+              return obrirModalMovimentSoci(m);
           }
         });
       });
@@ -1291,6 +1295,86 @@ async function confirmarLiquidacioPolissa(m, d) {
 
   // Flux normal: pagament amb moviment_n43_id, recàlcul d'estat i moviment conciliat.
   await vincular(m, factura.id);
+}
+
+// --- Moviment amb un soci o amb RNA (compte corrent, 555) ---
+// L'apunt té el mateix signe que el moviment bancari: una sortida de diners cap a la
+// persona fa que ella deu més a la SL (apunt negatiu) i una entrada, que en deu menys
+// (apunt positiu). Les factures i arrendaments no passen per aquí: són a Factures rebudes.
+
+async function obrirModalMovimentSoci(m) {
+  const { data: persones, error } = await supabase
+    .from('gaco_socis')
+    .select('id, nom, tipus')
+    .eq('actiu', true)
+    .order('tipus')
+    .order('nom');
+  if (error) {
+    alert('Error carregant les persones: ' + error.message);
+    return;
+  }
+  if (!persones?.length) {
+    alert('Cap soci donat d\'alta. Afegeix-lo a Finançament → Compte corrent socis.');
+    return;
+  }
+
+  const esCarrec = m.import < 0;
+  openModal({
+    title: `Moviment amb un soci o RNA de ${formatImport(m.import)}`,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <p>${m.concepte ?? ''}</p>
+      <p style="font-size:13px;">${
+        esCarrec
+          ? 'Sortida de diners de la SL: la persona en deu més a la SL (apunt negatiu al seu compte).'
+          : 'Entrada de diners a la SL: la persona en deu menys a la SL (apunt positiu al seu compte).'
+      }</p>
+      <div class="modal-section">
+        <label>Persona
+          <select id="ms-persona">
+            <option value="">Selecciona...</option>
+            ${persones.map((p) => `<option value="${p.id}">${p.nom}${p.tipus === 'vinculat' ? ' (préstecs a RNA)' : ''}</option>`).join('')}
+          </select>
+        </label>
+        <label>Concepte <input type="text" id="ms-concepte" value="${(m.referencia || m.concepte || '').replace(/"/g, '&quot;')}" /></label>
+      </div>
+      <button type="button" id="btn-ms-confirmar">Registrar i conciliar</button>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-ms-confirmar').addEventListener('click', async () => {
+        const sociId = body.querySelector('#ms-persona').value;
+        if (!sociId) return alert('Cal triar una persona.');
+        body.querySelector('#btn-ms-confirmar').disabled = true;
+
+        const { error: errA } = await supabase.from('gaco_socis_compte_corrent').insert({
+          soci_id: sociId,
+          data: m.data_valor,
+          concepte: body.querySelector('#ms-concepte').value.trim() || 'Moviment bancari',
+          tipus_moviment: esCarrec ? 'transferencia_a_soci' : 'transferencia_de_soci',
+          import: m.import,
+          moviment_n43_id: m.id,
+        });
+        if (errA) {
+          alert('Error registrant l\'apunt (has executat schema_socis.sql?): ' + errA.message);
+          body.querySelector('#btn-ms-confirmar').disabled = false;
+          return;
+        }
+
+        const { error: errM } = await supabase
+          .from('gaco_moviments_n43')
+          .update({ estat: 'conciliat', tipus_moviment: 'reintegrament_soci' })
+          .eq('id', m.id);
+        if (errM) {
+          await supabase.from('gaco_socis_compte_corrent').delete().eq('moviment_n43_id', m.id);
+          alert('Error conciliant el moviment: ' + errM.message);
+          body.querySelector('#btn-ms-confirmar').disabled = false;
+          return;
+        }
+        closeModal();
+        render();
+      });
+    },
+  });
 }
 
 // --- Classificar sense factura (reintegrament de soci, retrocessió, ajut...) ---
