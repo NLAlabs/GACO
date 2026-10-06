@@ -617,6 +617,13 @@ async function desarCapcalera(body, facturaId) {
   const proveidorTrobat = proveidorsCache.find((p) => p.nom === nomProveidorText);
   const formaPagament = body.querySelector('#m-forma-pagament').value || null;
 
+  // Protecció: línia escrita al formulari però no afegida
+  const preuPendent = body.querySelector('#ln-preu').value;
+  const descPendent = body.querySelector('#ln-descripcio').value.trim();
+  if (preuPendent || descPendent) {
+    return alert('Hi ha una línia escrita que encara no has afegit. Prem "Afegir línia" o buida els camps abans de desar.');
+  }
+
   const actualitzat = {
     tipus_factura: body.querySelector('#m-tipus-factura').value,
     proveidor_id: proveidorTrobat?.id ?? null,
@@ -641,10 +648,11 @@ async function desarCapcalera(body, facturaId) {
   const { error } = await supabase.from('gaco_factures_rebudes').update(actualitzat).eq('id', facturaId);
   if (error) return alert(`Error desant: ${error.message}`);
 
-  const { data: linies } = await supabase
+    const { data: linies } = await supabase
     .from('gaco_detall_factures_rebudes')
     .select('*, categoria:gaco_conceptes_comptables(tipus)')
     .eq('factura_id', facturaId);
+  if (!linies?.length && !confirm('Aquesta factura no té cap línia (total 0,00 €). Desar igualment?')) return;
   await recalcularCapcalera(facturaId, linies ?? []);
 
   closeModal();
