@@ -289,9 +289,11 @@ function conceptePerMoviment(moviment) {
  *
  * @param {string} compteId  uuid de gaco_comptes (ja resolt, no numCuenta cru)
  */
-async function hashDeduplicacio(compteId, moviment) {
+async function hashDeduplicacio(compteId, moviment, nOcurrencia = 1) {
   const concepte = conceptePerMoviment(moviment);
-  const base = [compteId, moviment.dataOperacio, moviment.dataValor, moviment.import, concepte].join('|');
+  const parts = [compteId, moviment.dataOperacio, moviment.dataValor, moviment.import, concepte];
+  if (nOcurrencia > 1) parts.push(`#${nOcurrencia}`); // la 1a ocurrència conserva el hash antic
+  const base = parts.join('|');
   const bytes = new TextEncoder().encode(base);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest))
@@ -352,8 +354,14 @@ async function importarFitxerN43(buffer, resoldreCompteId) {
     }
 
     const moviments = [];
+    // Moviments idèntics dins del mateix fitxer (p. ex. dues comissions de 0,90 € el mateix dia):
+    // el primer manté el hash de sempre; del segon endavant s'hi afegeix el nº d'ocurrència.
+    const ocurrencies = new Map();
     for (const moviment of compte.moviments) {
       const concepte = conceptePerMoviment(moviment);
+      const clauMov = [moviment.dataOperacio, moviment.dataValor, moviment.import, concepte].join('|');
+      const nOcurrencia = (ocurrencies.get(clauMov) ?? 0) + 1;
+      ocurrencies.set(clauMov, nOcurrencia);
       moviments.push({
         compte_id: compteId,
         data_operacio: moviment.dataOperacio,
@@ -362,7 +370,7 @@ async function importarFitxerN43(buffer, resoldreCompteId) {
         concepte,
         referencia: [moviment.referencia1, moviment.referencia2].filter(Boolean).join(' / '),
         estat: 'pendent',
-        hash_deduplicacio: await hashDeduplicacio(compteId, moviment),
+        hash_deduplicacio: await hashDeduplicacio(compteId, moviment, nOcurrencia),
       });
     }
 
@@ -370,9 +378,27 @@ async function importarFitxerN43(buffer, resoldreCompteId) {
     // coincidir amb el saldo_final que declara el propi fitxer (registre 33).
     // Si no hi ha registre 33, no es pot verificar (queda null, no false).
     const sumaImports = compte.moviments.reduce((s, m) => s + m.import, 0);
-    const saldoCalculat = Math.round((compte.saldoInicial + sumaImports) * 100) / 100;
     const saldoFinal = compte.tancament ? compte.tancament.saldoFinal : null;
-    const quadra = saldoFinal === null ? null : Math.abs(saldoCalculat - saldoFinal) < 0.005;
+    let saldoInicial = compte.saldoInicial;
+    let saldoCalculat = Math.round((saldoInicial + sumaImports) * 100) / 100;
+    let quadra = saldoFinal === null ? null : Math.abs(saldoCalculat - saldoFinal) < 0.005;
+
+    // Algunes entitats (Secció de Crèdit) emeten el signe del saldo inicial girat.
+    // Si no quadra però girant-lo sí que quadra exactament, s'accepta i s'avisa.
+    let signeInicialCorregit = false;
+    if (quadra === false && saldoInicial !== 0) {
+      const calculatGirat = Math.round((-saldoInicial + sumaImports) * 100) / 100;
+      if (Math.abs(calculatGirat - saldoFinal) < 0.005) {
+        avisos.push(
+          `Compte ${compte.numCuenta}: el signe del saldo inicial semblava invertit (${saldoInicial.toFixed(2)} €) ` +
+            `i s'ha corregit a ${(-saldoInicial).toFixed(2)} € perquè el quadre sigui exacte.`
+        );
+        saldoInicial = -saldoInicial;
+        saldoCalculat = calculatGirat;
+        quadra = true;
+        signeInicialCorregit = true;
+      }
+    }
 
     if (!compte.tancament) {
       avisos.push(
@@ -390,7 +416,8 @@ async function importarFitxerN43(buffer, resoldreCompteId) {
       numCuenta: compte.numCuenta,
       dataInicial: compte.fechaInicial,
       dataFinal: compte.fechaFinal,
-      saldoInicial: compte.saldoInicial,
+      saldoInicial,
+      signeInicialCorregit,
       saldoFinal,
       saldoCalculat,
       quadra,
