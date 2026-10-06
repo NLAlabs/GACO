@@ -215,11 +215,13 @@ function htmlPolissa(c, cond, saldoInfo) {
   let blocSaldo = '<p>Dispost actual: — (cap importació N43 encara)</p>';
   if (saldoInfo) {
     const saldo = saldoInfo.saldo_final ?? saldoInfo.saldo_calculat;
-    const dispost = saldo < 0 ? -saldo : 0;
     const limit = cond ? Number(cond.limit_import) : null;
-    blocSaldo = `<p>Dispost a ${formatData(saldoInfo.data_final)}: <strong>${formatImport(dispost)}</strong>${
-      limit !== null ? ` · Disponible: <strong>${formatImport(limit - dispost)}</strong>` : ''
-    }</p>`;
+    // Saldo positiu = a favor del titular (el banc el suma al disponible); negatiu = dispost.
+    const textSaldo =
+      saldo > 0
+        ? `Saldo a favor a ${formatData(saldoInfo.data_final)}: <strong>${formatImport(saldo)}</strong>`
+        : `Dispost a ${formatData(saldoInfo.data_final)}: <strong>${formatImport(-saldo)}</strong>`;
+    blocSaldo = `<p>${textSaldo}${limit !== null ? ` · Disponible: <strong>${formatImport(limit + saldo)}</strong>` : ''}</p>`;
   }
 
   let blocVenciment = '';
