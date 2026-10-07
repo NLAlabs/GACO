@@ -42,15 +42,17 @@ async function resoldreCompteId({ claveEntidad, claveOficina, numCuenta }) {
  * l'anterior. Si no coincideix, hi ha un buit (o un solapament) de dies
  * sense importar entre totes dues — es marca com a avís, no es bloqueja.
  */
-async function comprovarContinuitat(compteId, saldoInicialNou, dataInicialNova) {
+async function comprovarContinuitat(compteId, saldoInicialNou, dataInicialNova, excloureId = null) {
   // Només compta la tanda que acaba ABANS d'aquesta: si s'importa un període
   // anterior a les tandes ja gravades, la "darrera per data_final" és una tanda
   // posterior i donaria un fals avís de salt.
-  const { data: anterior } = await supabase
+  let consultaAnterior = supabase
     .from('gaco_importacions_n43')
     .select('data_final, saldo_final, saldo_calculat')
     .eq('compte_id', compteId)
-    .lte('data_final', dataInicialNova)
+    .lte('data_final', dataInicialNova);
+  if (excloureId) consultaAnterior = consultaAnterior.neq('id', excloureId);
+  const { data: anterior } = await consultaAnterior
     .order('data_final', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -74,12 +76,14 @@ async function comprovarContinuitat(compteId, saldoInicialNou, dataInicialNova) 
  * coincidir amb el saldo_inicial de la següent. Retorna també l'id de la
  * següent perquè se n'actualitzi continua_anterior un cop gravada aquesta.
  */
-async function comprovarContinuitatSeguent(compteId, saldoFinalNou, dataFinalNova) {
-  const { data: seguent } = await supabase
+async function comprovarContinuitatSeguent(compteId, saldoFinalNou, dataFinalNova, excloureId = null) {
+  let consultaSeguent = supabase
     .from('gaco_importacions_n43')
     .select('id, data_inicial, saldo_inicial')
     .eq('compte_id', compteId)
-    .gte('data_inicial', dataFinalNova)
+    .gte('data_inicial', dataFinalNova);
+  if (excloureId) consultaSeguent = consultaSeguent.neq('id', excloureId);
+  const { data: seguent } = await consultaSeguent
     .order('data_inicial', { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -111,7 +115,7 @@ async function cercarPossiblesDuplicatsManual(compteId, moviments) {
 
   const { data: manuals } = await supabase
     .from('gaco_moviments_n43')
-    .select('id, data_valor, import, concepte')
+    .select('id, data_valor, import, concepte, estat')
     .eq('compte_id', compteId)
     .eq('origen', 'manual')
     .gte('data_valor', des)
@@ -119,6 +123,40 @@ async function cercarPossiblesDuplicatsManual(compteId, moviments) {
 
   if (!manuals?.length) return [];
   return manuals.filter((man) => moviments.some((m) => m.import === man.import));
+}
+
+/**
+ * Si aquest mateix període d'aquest compte ja s'havia importat (mateixes dates
+ * inicial i final), es reutilitza la tanda en lloc de crear-ne una de repetida.
+ * Es compara per dates i no pel nom del fitxer, que el banc canvia sovint.
+ */
+async function cercarTandaExistent(compteId, dataInicial, dataFinal) {
+  const { data } = await supabase
+    .from('gaco_importacions_n43')
+    .select('id')
+    .eq('compte_id', compteId)
+    .eq('data_inicial', dataInicial)
+    .eq('data_final', dataFinal)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  return data ?? null;
+}
+
+/**
+ * Els moviments d'una importació anterior a l'existència del control de tandes
+ * (o gravats amb una tanda que després s'ha esborrat) no tenen importacio_id.
+ * En reimportar el fitxer se'ls hi assigna la tanda, perquè Importacions els compti.
+ */
+async function lligarMovimentsSenseTanda(importacioId, hashes) {
+  const mida = 100; // els hashes són llargs: es fan lots perquè la URL no es passi de llargada
+  for (let i = 0; i < hashes.length; i += mida) {
+    await supabase
+      .from('gaco_moviments_n43')
+      .update({ importacio_id: importacioId })
+      .in('hash_deduplicacio', hashes.slice(i, i + mida))
+      .is('importacio_id', null);
+  }
 }
 
 async function handleFileUpload(event) {
@@ -140,38 +178,43 @@ async function handleFileUpload(event) {
   const targetesHtml = [];
 
   for (const resultat of resultatsPerCompte) {
+    const existent = await cercarTandaExistent(resultat.compteId, resultat.dataInicial, resultat.dataFinal);
     const { continuaAnterior, avis: avisAnterior } = await comprovarContinuitat(
       resultat.compteId,
       resultat.saldoInicial,
-      resultat.dataInicial
+      resultat.dataInicial,
+      existent?.id ?? null
     );
     const seguent = await comprovarContinuitatSeguent(
       resultat.compteId,
       resultat.saldoFinal ?? resultat.saldoCalculat,
-      resultat.dataFinal
+      resultat.dataFinal,
+      existent?.id ?? null
     );
     const avisContinuitat = [avisAnterior, seguent.avis].filter(Boolean).join(' ') || null;
     const possiblesManuals = await cercarPossiblesDuplicatsManual(resultat.compteId, resultat.moviments);
 
-    const { data: importacio, error: errImportacio } = await supabase
-      .from('gaco_importacions_n43')
-      .insert({
-        compte_id: resultat.compteId,
-        data_inicial: resultat.dataInicial,
-        data_final: resultat.dataFinal,
-        saldo_inicial: resultat.saldoInicial,
-        saldo_final: resultat.saldoFinal,
-        saldo_calculat: resultat.saldoCalculat,
-        quadra: resultat.quadra,
-        continua_anterior: continuaAnterior,
-        num_apunts_debe: resultat.numApuntsDebe,
-        total_import_debe: resultat.totalImportDebe,
-        num_apunts_haber: resultat.numApuntsHaber,
-        total_import_haber: resultat.totalImportHaber,
-        nom_fitxer: file.name,
-      })
-      .select('id')
-      .single();
+    const registreTanda = {
+      compte_id: resultat.compteId,
+      data_inicial: resultat.dataInicial,
+      data_final: resultat.dataFinal,
+      saldo_inicial: resultat.saldoInicial,
+      saldo_final: resultat.saldoFinal,
+      saldo_calculat: resultat.saldoCalculat,
+      quadra: resultat.quadra,
+      continua_anterior: continuaAnterior,
+      num_apunts_debe: resultat.numApuntsDebe,
+      total_import_debe: resultat.totalImportDebe,
+      num_apunts_haber: resultat.numApuntsHaber,
+      total_import_haber: resultat.totalImportHaber,
+    };
+
+    // Reimportació del mateix període: s'actualitza la tanda existent (conserva el nom
+    // del primer fitxer) en lloc de crear-ne una de repetida.
+    const reutilitzada = Boolean(existent);
+    const { data: importacio, error: errImportacio } = reutilitzada
+      ? await supabase.from('gaco_importacions_n43').update(registreTanda).eq('id', existent.id).select('id').single()
+      : await supabase.from('gaco_importacions_n43').insert({ ...registreTanda, nom_fitxer: file.name }).select('id').single();
 
     if (errImportacio) {
       targetesHtml.push(
@@ -181,9 +224,11 @@ async function handleFileUpload(event) {
     }
 
     const movimentsAmbTanda = resultat.moviments.map((m) => ({ ...m, importacio_id: importacio.id }));
-    const { error: errMoviments } = await supabase
+    // select('id') només retorna les files realment inserides (les duplicades s'ometen).
+    const { data: inserits, error: errMoviments } = await supabase
       .from('gaco_moviments_n43')
-      .upsert(movimentsAmbTanda, { onConflict: 'hash_deduplicacio', ignoreDuplicates: true });
+      .upsert(movimentsAmbTanda, { onConflict: 'hash_deduplicacio', ignoreDuplicates: true })
+      .select('id');
 
     if (errMoviments) {
       targetesHtml.push(
@@ -197,14 +242,21 @@ async function handleFileUpload(event) {
       await supabase.from('gaco_importacions_n43').update({ continua_anterior: seguent.continua }).eq('id', seguent.seguentId);
     }
 
-    targetesHtml.push(htmlResumCompte(resultat, avisContinuitat, possiblesManuals));
+    if (reutilitzada) await lligarMovimentsSenseTanda(importacio.id, resultat.moviments.map((m) => m.hash_deduplicacio));
+
+    targetesHtml.push(
+      htmlResumCompte(resultat, avisContinuitat, possiblesManuals, {
+        reutilitzada,
+        nous: inserits?.length ?? null,
+      })
+    );
   }
 
   resultatEl.innerHTML = targetesHtml.join('');
   if (avisos.length) console.log('Avisos del parseig N43:', avisos);
 }
 
-function htmlResumCompte(resultat, avisContinuitat, possiblesManuals = []) {
+function htmlResumCompte(resultat, avisContinuitat, possiblesManuals = [], info = {}) {
   const quadraHtml =
     resultat.quadra === null
       ? '<p>⚠️ Sense registre de tancament al fitxer — no es pot verificar el saldo final.</p>'
@@ -220,13 +272,33 @@ function htmlResumCompte(resultat, avisContinuitat, possiblesManuals = []) {
 
   const duplicatsHtml = possiblesManuals.length
     ? `<p class="error">⚠️ ${possiblesManuals.length} moviment(s) d'aquest fitxer coincideixen amb un moviment que vau introduir a mà — reviseu-los a Conciliació per no deixar-los duplicats:</p>
-       ${possiblesManuals.map((m) => `<p>${formatData(m.data_valor)} · ${formatImport(m.import)} · ${m.concepte ?? ''}</p>`).join('')}`
+       ${possiblesManuals
+         .map(
+           (m) =>
+             `<p>${formatData(m.data_valor)} · ${formatImport(m.import)} · ${m.concepte ?? ''} — manual <strong>${m.estat}</strong>${
+               m.estat === 'conciliat' ? ' (porta vincles: cal passar-los al moviment del banc abans d\'esborrar-lo)' : ''
+             }</p>`
+         )
+         .join('')}`
+    : '';
+
+  const nousHtml =
+    info.nous === null || info.nous === undefined
+      ? `${resultat.moviments.length} moviments processats`
+      : `${resultat.moviments.length} moviments al fitxer: <strong>${info.nous} nous</strong>, ${resultat.moviments.length - info.nous} ja existien`;
+  const reutilitzadaHtml = info.reutilitzada
+    ? '<p>ℹ️ Aquest període ja s\'havia importat: s\'ha reutilitzat la tanda existent (no se n\'ha creat cap de repetida).</p>'
+    : '';
+  const signeHtml = resultat.signeInicialCorregit
+    ? `<p>ℹ️ El fitxer portava el signe del saldo inicial invertit: s'ha corregit a ${formatImport(resultat.saldoInicial)} perquè el quadre sigui exacte.</p>`
     : '';
 
   return `
     <div class="card">
       <p><strong>${resultat.numCuenta}</strong> — ${formatData(resultat.dataInicial)} a ${formatData(resultat.dataFinal)}</p>
-      <p>${resultat.moviments.length} moviments processats (saldo inicial ${formatImport(resultat.saldoInicial)}).</p>
+      <p>${nousHtml} (saldo inicial ${formatImport(resultat.saldoInicial)}).</p>
+      ${reutilitzadaHtml}
+      ${signeHtml}
       ${quadraHtml}
       ${continuitatHtml}
       ${duplicatsHtml}
