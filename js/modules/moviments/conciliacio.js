@@ -49,7 +49,7 @@ export async function render() {
   const { data: moviments, error } = await supabase
     .from('gaco_moviments_n43')
     .select(`
-      id, data_valor, import, concepte, referencia, tipus_moviment, estat, compte_id,
+      id, data_valor, import, concepte, referencia, tipus_moviment, estat, compte_id, origen,
       gaco_comptes ( descripcio, tipus, compte_polissa_vinculat_id,
         gaco_entitats_bancaries ( nom ) )
     `)
@@ -109,6 +109,7 @@ export async function render() {
     possibles.push([m, opcions[0]]);
   }
   const soltsFinals = solts.filter((m) => !usatsPossibles.has(m.id));
+  const duplicatsManuals = await cercarDuplicatsManuals(moviments);
 
   contenidor.innerHTML = `
     ${parells.length ? '<h3>Traspassos detectats (comptes vinculats)</h3>' : ''}
@@ -121,7 +122,7 @@ export async function render() {
     }
     ${possibles.map((p) => htmlParellTraspas(p, true)).join('')}
     <h3>Moviments pendents</h3>
-    <div id="llista-solts">${soltsFinals.map((m) => htmlMoviment(m)).join('')}</div>
+    <div id="llista-solts">${soltsFinals.map((m) => htmlMoviment(m, duplicatsManuals.get(m.id))).join('')}</div>
   `;
 
   contenidor.querySelectorAll('[data-confirmar-traspas]').forEach((btn) => {
@@ -149,13 +150,83 @@ function htmlParellTraspas([a, b], dubtos = false) {
   `;
 }
 
-function htmlMoviment(m) {
+// --- Possibles duplicats entre un moviment manual i un del banc (N43) ---
+// Quan un moviment s'ha introduït a mà i després arriba el N43, tots dos coexisteixen.
+// Aquesta funció només AVISA (no toca res): serveix perquè no es concilïn dos cops.
+
+function podenSerElMateix(a, b) {
+  if (a.compte_id !== b.compte_id) return false;
+  const difImport = Math.abs(a.import - b.import);
+  // Import exacte; o, a partir de 10 €, fins a 1 € de diferència (errors de tecleig tipus 2.486,57 / 2.486,37).
+  if (!(difImport < 0.005 || (Math.abs(a.import) >= 10 && difImport <= 1))) return false;
+  const dies = diesEntre(a.data_valor, b.data_valor);
+  // Mateix dia i mes amb any diferent: error de tecleig de l'any (p. ex. 2029 en lloc de 2026).
+  const mateixDiaMes = a.data_valor.slice(5) === b.data_valor.slice(5);
+  return dies <= 3 || (difImport < 0.005 && mateixDiaMes);
+}
+
+async function cercarDuplicatsManuals(moviments) {
+  const resultat = new Map(); // id del moviment pendent -> [moviment equivalent a l'altre origen]
+  const afegir = (id, altre) => resultat.set(id, [...(resultat.get(id) ?? []), altre]);
+  try {
+    const { data: manuals } = await supabase
+      .from('gaco_moviments_n43')
+      .select('id, compte_id, data_valor, import, concepte, estat, origen')
+      .eq('origen', 'manual');
+    if (!manuals?.length) return resultat;
+
+    // Pendents del banc davant de qualsevol manual (pendent o ja conciliat).
+    for (const m of moviments) {
+      if (m.origen === 'manual') continue;
+      for (const man of manuals) if (man.id !== m.id && podenSerElMateix(m, man)) afegir(m.id, man);
+    }
+
+    // Manuals pendents davant dels del banc (també els ja conciliats), amb finestra de ±3 dies.
+    const pendentsManuals = moviments.filter((m) => m.origen === 'manual');
+    await Promise.all(
+      pendentsManuals.map(async (man) => {
+        const { data: banc } = await supabase
+          .from('gaco_moviments_n43')
+          .select('id, compte_id, data_valor, import, concepte, estat, origen')
+          .eq('origen', 'n43')
+          .eq('compte_id', man.compte_id)
+          .gte('data_valor', dataMesDies(man.data_valor, -3))
+          .lte('data_valor', dataMesDies(man.data_valor, 3));
+        for (const b of banc ?? []) if (podenSerElMateix(man, b)) afegir(man.id, b);
+      })
+    );
+  } catch (err) {
+    console.warn('No s\'ha pogut comprovar els possibles duplicats manuals:', err);
+  }
+  return resultat;
+}
+
+function htmlAvisDuplicats(duplicats) {
+  if (!duplicats?.length) return '';
+  return duplicats
+    .map((d) => {
+      const esManual = d.origen === 'manual';
+      const detall = `${formatData(d.data_valor)} · ${formatImport(d.import)} · ${d.concepte ?? ''}`;
+      const consell = esManual
+        ? d.estat === 'conciliat'
+          ? 'ja està conciliat i porta vincles: no el concilïs de nou, cal passar-los a aquest moviment i esborrar el manual'
+          : 'pendent: un cop confirmat que és el mateix, es pot esborrar'
+        : d.estat === 'conciliat'
+          ? 'el del banc ja està conciliat'
+          : 'el del banc està pendent: concilia aquest i esborra el manual';
+      return `<p style="font-size:13px; color:#b00020;">⚠ Possible duplicat d'un moviment ${esManual ? 'manual' : 'del banc'} (${d.estat}): ${detall} — ${consell}.</p>`;
+    })
+    .join('');
+}
+
+function htmlMoviment(m, duplicats = []) {
   return `
     <div class="card">
-      <p class="modal-section-title">${etiquetaCompte(m.gaco_comptes)} · ${ETIQUETES_TIPUS[m.tipus_moviment] ?? 'Sense classificar'}</p>
+      <p class="modal-section-title">${etiquetaCompte(m.gaco_comptes)} · ${ETIQUETES_TIPUS[m.tipus_moviment] ?? 'Sense classificar'}${m.origen === 'manual' ? ' · manual' : ''}</p>
       <p>${m.concepte ?? '(sense concepte)'}</p>
       ${m.referencia ? `<p style="color: var(--gaco-text-secondary); font-size: 13px;">${m.referencia}</p>` : ''}
       <p>${formatData(m.data_valor)} · <strong>${formatImport(m.import)}</strong></p>
+      ${htmlAvisDuplicats(duplicats)}
       <button type="button" data-quees="${m.id}">Què és?</button>
       <button type="button" data-ignorar="${m.id}">Ignorar</button>
     </div>
@@ -1377,7 +1448,7 @@ async function obrirModalMovimentSoci(m) {
   });
 }
 
-// --- Classificar sense factura (reintegrament de soci, retrocessió, ajut...) ---
+// --- Classificar sense factura (retrocessió, ajut, subvenció...) ---
 
 async function obrirModalClassificar(m) {
   const { data: conceptes } = await supabase
@@ -1393,12 +1464,10 @@ async function obrirModalClassificar(m) {
     bodyHtml: `
       <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
       <p>${m.concepte ?? ''}</p>
-      <label>Tipus
-        <select id="cl-tipus">
-          <option value="altres">Altres (retrocessió, ajut o subvenció...)</option>
-          <option value="reintegrament_soci">Reintegrament de soci</option>
-        </select>
-      </label>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">
+        Per a retrocessions, ajuts, subvencions i altres moviments sense factura. Els moviments amb un soci o RNA
+        es registren amb l'opció "Moviment amb un soci o RNA", que els apunta al compte corrent.
+      </p>
       <label>Concepte
         <select id="cl-concepte">
           <option value="">Selecciona...</option>
@@ -1413,12 +1482,11 @@ async function obrirModalClassificar(m) {
     `,
     onMount: (body) => {
       body.querySelector('#btn-classificar').addEventListener('click', async () => {
-        const tipus = body.querySelector('#cl-tipus').value;
         const concepteId = body.querySelector('#cl-concepte').value || null;
-        if (tipus === 'altres' && !concepteId) return alert('Cal triar un concepte.');
+        if (!concepteId) return alert('Cal triar un concepte.');
         const { error } = await supabase
           .from('gaco_moviments_n43')
-          .update({ estat: 'conciliat', tipus_moviment: tipus, categoria_id: concepteId })
+          .update({ estat: 'conciliat', tipus_moviment: 'altres', categoria_id: concepteId })
           .eq('id', m.id);
         if (error) return alert('Error classificant el moviment: ' + error.message);
         closeModal();
