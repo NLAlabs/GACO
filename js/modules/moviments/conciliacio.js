@@ -1407,7 +1407,10 @@ async function obrirModalMovimentSoci(m) {
             ${persones.map((p) => `<option value="${p.id}">${p.nom}${p.tipus === 'vinculat' ? ' (préstecs a RNA)' : ''}</option>`).join('')}
           </select>
         </label>
-        <label>Concepte <input type="text" id="ms-concepte" value="${(m.referencia || m.concepte || '').replace(/"/g, '&quot;')}" /></label>
+        <label>Concepte (el del banc) <input type="text" id="ms-concepte" value="${(m.referencia || m.concepte || '').replace(/"/g, '&quot;')}" /></label>
+        <label>Motiu (opcional) — per a què és
+          <textarea id="ms-motiu" maxlength="500" style="width:100%; min-height:60px;" placeholder="p. ex. IBI Vinatesa · autònom i préstec X · assegurança..."></textarea>
+        </label>
       </div>
       <button type="button" id="btn-ms-confirmar">Registrar i conciliar</button>
     `,
@@ -1421,6 +1424,7 @@ async function obrirModalMovimentSoci(m) {
           soci_id: sociId,
           data: m.data_valor,
           concepte: body.querySelector('#ms-concepte').value.trim() || 'Moviment bancari',
+          motiu: body.querySelector('#ms-motiu').value.trim() || null,
           tipus_moviment: esCarrec ? 'transferencia_a_soci' : 'transferencia_de_soci',
           import: m.import,
           moviment_n43_id: m.id,
