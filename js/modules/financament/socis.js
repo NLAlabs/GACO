@@ -66,7 +66,7 @@ async function carregarDades() {
   for (let desde = 0; ; desde += mida) {
     const { data, error: errA } = await supabase
       .from('gaco_socis_compte_corrent')
-      .select('id, soci_id, data, concepte, tipus_moviment, import, factura_id, moviment_n43_id, created_at')
+      .select('id, soci_id, data, concepte, motiu, tipus_moviment, import, factura_id, moviment_n43_id, created_at')
       .order('data', { ascending: true })
       .order('created_at', { ascending: true })
       .range(desde, desde + mida - 1);
@@ -199,11 +199,12 @@ function obrirExtracte(sociId) {
       const lligat = a.factura_id || a.moviment_n43_id;
       return `<tr>
         <td>${formatData(a.data)}</td>
-        <td>${esc(a.concepte)}</td>
+        <td>${esc(a.concepte)}${a.motiu ? `<br><span style="font-size:12px; color:var(--gaco-text-secondary);">${esc(a.motiu)}</span>` : ''}</td>
         <td>${TIPUS[a.tipus_moviment]?.label.split(' (')[0] ?? esc(a.tipus_moviment)}</td>
         <td style="text-align:right;">${formatImport(a.import)}</td>
         <td style="text-align:right;">${formatImport(saldo)}</td>
-        <td>${lligat ? '<span title="Lligat a una factura o moviment bancari">🔗</span>' : `<button type="button" data-esborrar="${a.id}" style="font-size:11px;">Esborrar</button>`}</td>
+        <td>${lligat ? '<span title="Lligat a una factura o moviment bancari">🔗</span>' : `<button type="button" data-esborrar="${a.id}" style="font-size:11px;">Esborrar</button>`}
+            <button type="button" data-motiu="${a.id}" title="Editar el motiu" style="font-size:11px;">✎</button></td>
       </tr>`;
     })
     .join('');
@@ -222,7 +223,7 @@ function obrirExtracte(sociId) {
       <p>Saldo a 31/12/${anyVista}: ${htmlSaldo(r.final, soci?.nom ?? '')}</p>
       <p style="font-size:12px; color: var(--gaco-text-secondary);">Els apunts amb 🔗 venen d'una factura o d'un moviment bancari: es gestionen des d'allà.</p>
     `,
-    onMount: (body) => {
+        onMount: (body) => {
       body.querySelectorAll('[data-esborrar]').forEach((btn) => {
         btn.addEventListener('click', async () => {
           if (!confirm('Esborrar aquest apunt?')) return;
@@ -231,6 +232,14 @@ function obrirExtracte(sociId) {
           closeModal();
           await render();
           obrirExtracte(sociId);
+        });
+      });
+
+      // NOU: botó ✎ per editar el motiu
+      body.querySelectorAll('[data-motiu]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          closeModal();
+          obrirEditarMotiu(btn.dataset.motiu, sociId);
         });
       });
     },
@@ -256,6 +265,7 @@ function obrirNouApunt(sociId) {
         </div>
         <label>Import (€, sempre positiu) <input type="number" step="0.01" min="0" id="a-import" /></label>
         <label>Concepte <input type="text" id="a-concepte" /></label>
+		<label>Motiu (opcional) <textarea id="a-motiu" maxlength="500" style="width:100%; min-height:60px;"></textarea></label>
       </div>
       <button type="button" id="btn-desar-apunt">Desar</button>
     `,
@@ -284,7 +294,7 @@ function obrirNouApunt(sociId) {
         const { error } = await supabase.from('gaco_socis_compte_corrent').insert({
           soci_id: sociId,
           data,
-          concepte,
+          concepte, motiu: body.querySelector('#a-motiu').value.trim() || null,
           tipus_moviment: tipus,
           import: arrodonir2(importAbs * Number(sel.value)),
         });
@@ -525,6 +535,31 @@ function obrirNovaPersona() {
         if (error) return alert('Error desant: ' + error.message);
         closeModal();
         render();
+      });
+    },
+  });
+}
+
+function obrirEditarMotiu(apuntId, sociId) {
+  const a = (apuntsPerSoci[sociId] ?? []).find((x) => x.id === apuntId);
+  if (!a) return;
+  openModal({
+    title: "Motiu de l'apunt",
+    bodyHtml: `
+      <p>${formatData(a.data)} · ${esc(a.concepte)} · <strong>${formatImport(a.import)}</strong></p>
+      <label>Motiu — per a què és
+        <textarea id="mo-text" maxlength="500" style="width:100%; min-height:80px;">${esc(a.motiu)}</textarea>
+      </label>
+      <button type="button" id="btn-desar-motiu">Desar</button>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-desar-motiu').addEventListener('click', async () => {
+        const motiu = body.querySelector('#mo-text').value.trim() || null;
+        const { error } = await supabase.from('gaco_socis_compte_corrent').update({ motiu }).eq('id', apuntId);
+        if (error) return alert('Error desant el motiu: ' + error.message);
+        closeModal();
+        await render();
+        obrirExtracte(sociId);
       });
     },
   });
