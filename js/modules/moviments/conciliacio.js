@@ -490,8 +490,8 @@ async function obrirModalRepartir(moviment) {
       <p>${formatData(moviment.data_valor)} · ${etiquetaCompte(moviment.gaco_comptes)}</p>
       <p>${moviment.concepte ?? ''}</p>
       <p style="font-size:13px; color: var(--gaco-text-secondary);">
-        Marca cada factura o despesa i indica quants euros en paga aquest moviment (pot ser un pagament parcial).
-        La suma ha de coincidir amb ${formatImport(total)}.
+        Marca cada factura o despesa i indica quants euros en paga aquest moviment (pot ser un pagament parcial,
+        o fins i tot més del pendent si s'havia pagat una quantitat fixa). La suma ha de coincidir amb ${formatImport(total)}.
       </p>
       <div class="modal-section">
         <input type="text" id="rp-cerca" placeholder="Filtrar per nom o número..." style="width:100%; padding:8px;" />
@@ -512,14 +512,26 @@ async function obrirModalRepartir(moviment) {
         const suma = repartit();
         const falta = arrodonir(total - suma);
         const quadra = Math.abs(falta) < 0.005;
-        const imports_ok = [...triades.entries()].every(([id, v]) => {
-          const imp = parseFloat(v);
+        const imports_ok = [...triades.values()].every((v) => parseFloat(v) > 0);
+        // Pagar més del pendent és vàlid (p. ex. nòmines pagades amb quantitats fixes que es compensen
+        // en una nòmina posterior): queda com a pendent negatiu. Només s'avisa.
+        let excessos = 0;
+        let importExces = 0;
+        for (const [id, v] of triades) {
           const c = candidates.find((x) => x.id === id);
-          return imp > 0 && imp <= (c?.pendent ?? 0) + 0.005; // no es pot pagar més del que està pendent
-        });
+          const dif = arrodonir((parseFloat(v) || 0) - (c?.pendent ?? 0));
+          if (dif > 0.005) {
+            excessos++;
+            importExces += dif;
+          }
+        }
         resum.innerHTML = `Repartit: ${formatImport(suma)} · ${
           quadra ? '✔ quadra' : `<span style="color:#b00020;">${falta > 0 ? 'falta ' + formatImport(falta) : 'sobren ' + formatImport(-falta)}</span>`
-        }${imports_ok ? '' : ' · <span style="color:#b00020;">algun import és zero o supera el pendent de la factura</span>'}`;
+        }${imports_ok ? '' : ' · <span style="color:#b00020;">cada import ha de ser major que zero</span>'}${
+          excessos
+            ? `<br><span style="font-weight:normal; font-size:13px;">⚠ ${excessos} factura(es) quedaran pagades de més (${formatImport(arrodonir(importExces))} en total): el pendent serà negatiu fins que es compensi.</span>`
+            : ''
+        }`;
         btn.disabled = !(triades.size > 0 && quadra && imports_ok);
       };
 
@@ -551,7 +563,7 @@ async function obrirModalRepartir(moviment) {
         if (!id) return;
         const camp = llista.querySelector(`[data-rp-import="${id}"]`);
         if (e.target.checked) {
-          // Proposa el que falta per repartir, sense passar del pendent de la factura.
+          // Proposa el que falta per repartir, sense passar del pendent de la factura (es pot canviar).
           const c = candidates.find((x) => x.id === id);
           const proposta = Math.min(Math.max(0, arrodonir(total - repartit())), c?.pendent ?? 0);
           triades.set(id, proposta > 0 ? String(proposta) : '');
