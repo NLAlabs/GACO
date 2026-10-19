@@ -1005,11 +1005,23 @@ async function eliminarPagament(pagamentId, body, facturaId) {
   if (!confirm('Eliminar aquest pagament?')) return;
   const { data: pag } = await supabase
     .from('gaco_pagaments_factures_rebudes')
-    .select('soci_id, import, data_pagament, factura_id')
+    .select('soci_id, import, data_pagament, factura_id, moviment_n43_id')
     .eq('id', pagamentId)
     .single();
   const { error } = await supabase.from('gaco_pagaments_factures_rebudes').delete().eq('id', pagamentId);
   if (error) return alert(`Error eliminant el pagament: ${error.message}`);
+
+  // Si el pagament venia d'un moviment bancari, el moviment torna a pendent de conciliar
+  // (sempre que no li quedi cap altre pagament enllaçat).
+  if (pag?.moviment_n43_id) {
+    const { count } = await supabase
+      .from('gaco_pagaments_factures_rebudes')
+      .select('id', { count: 'exact', head: true })
+      .eq('moviment_n43_id', pag.moviment_n43_id);
+    if (!count) {
+      await supabase.from('gaco_moviments_n43').update({ estat: 'pendent', tipus_moviment: null }).eq('id', pag.moviment_n43_id);
+    }
+  }
 
   // Si el pagava un soci, es desfà també l'apunt corresponent del seu compte corrent.
   if (pag?.soci_id) {
