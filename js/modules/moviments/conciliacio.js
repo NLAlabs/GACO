@@ -467,6 +467,165 @@ async function obrirModalVincular(moviment) {
   });
 }
 
+// --- Repartir un càrrec entre diverses factures o despeses (p. ex. una transferència de nòmines) ---
+// Crea un pagament per factura, tots amb el mateix moviment_n43_id i l'import repartit
+// (pot ser un pagament parcial de cada factura). El moviment només es dóna per conciliat
+// si la suma repartida quadra al cèntim amb l'import del moviment.
+
+async function obrirModalRepartir(moviment) {
+  let candidates;
+  try {
+    candidates = await cercarFacturesCandidates(moviment);
+  } catch (err) {
+    alert('Error cercant factures: ' + err.message);
+    return;
+  }
+  const total = Math.abs(moviment.import);
+  const triades = new Map(); // id de factura -> import repartit (text del camp)
+
+  openModal({
+    title: `Repartir ${formatImport(moviment.import)} entre diverses factures`,
+    wide: true,
+    bodyHtml: `
+      <p>${formatData(moviment.data_valor)} · ${etiquetaCompte(moviment.gaco_comptes)}</p>
+      <p>${moviment.concepte ?? ''}</p>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">
+        Marca cada factura o despesa i indica quants euros en paga aquest moviment (pot ser un pagament parcial).
+        La suma ha de coincidir amb ${formatImport(total)}.
+      </p>
+      <div class="modal-section">
+        <input type="text" id="rp-cerca" placeholder="Filtrar per nom o número..." style="width:100%; padding:8px;" />
+      </div>
+      <div id="rp-llista"></div>
+      <p id="rp-resum" style="font-weight:bold;"></p>
+      <button type="button" id="rp-confirmar" disabled>Registrar el repartiment</button>
+    `,
+    onMount: (body) => {
+      const llista = body.querySelector('#rp-llista');
+      const resum = body.querySelector('#rp-resum');
+      const btn = body.querySelector('#rp-confirmar');
+      const cerca = body.querySelector('#rp-cerca');
+      const arrodonir = (n) => Math.round(n * 100) / 100;
+      const repartit = () => arrodonir([...triades.values()].reduce((s, v) => s + (parseFloat(v) || 0), 0));
+
+      const actualitzarResum = () => {
+        const suma = repartit();
+        const falta = arrodonir(total - suma);
+        const quadra = Math.abs(falta) < 0.005;
+        const imports_ok = [...triades.entries()].every(([id, v]) => {
+          const imp = parseFloat(v);
+          const c = candidates.find((x) => x.id === id);
+          return imp > 0 && imp <= (c?.pendent ?? 0) + 0.005; // no es pot pagar més del que està pendent
+        });
+        resum.innerHTML = `Repartit: ${formatImport(suma)} · ${
+          quadra ? '✔ quadra' : `<span style="color:#b00020;">${falta > 0 ? 'falta ' + formatImport(falta) : 'sobren ' + formatImport(-falta)}</span>`
+        }${imports_ok ? '' : ' · <span style="color:#b00020;">algun import és zero o supera el pendent de la factura</span>'}`;
+        btn.disabled = !(triades.size > 0 && quadra && imports_ok);
+      };
+
+      const pintar = () => {
+        const text = cerca.value.trim().toLowerCase();
+        const visibles = candidates.filter(
+          (c) => triades.has(c.id) || c.nom.toLowerCase().includes(text) || (c.num ?? '').toLowerCase().includes(text)
+        );
+        llista.innerHTML =
+          visibles
+            .map(
+              (c) => `
+          <div class="modal-section" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <label style="flex:1; min-width:260px; cursor:pointer;">
+              <input type="checkbox" data-rp-check="${c.id}" ${triades.has(c.id) ? 'checked' : ''} />
+              <strong>${c.nom}</strong>${c.num ? ' · ' + c.num : ''} — ${formatData(c.data)} · Pendent: ${formatImport(c.pendent ?? 0)}
+            </label>
+            <input type="number" step="0.01" min="0" data-rp-import="${c.id}" value="${triades.get(c.id) ?? ''}"
+                   placeholder="Import" style="width:110px;" ${triades.has(c.id) ? '' : 'disabled'} />
+          </div>`
+            )
+            .join('') || '<p>Cap resultat.</p>';
+      };
+
+      cerca.addEventListener('input', pintar);
+
+      llista.addEventListener('change', (e) => {
+        const id = e.target.dataset.rpCheck;
+        if (!id) return;
+        const camp = llista.querySelector(`[data-rp-import="${id}"]`);
+        if (e.target.checked) {
+          // Proposa el que falta per repartir, sense passar del pendent de la factura.
+          const c = candidates.find((x) => x.id === id);
+          const proposta = Math.min(Math.max(0, arrodonir(total - repartit())), c?.pendent ?? 0);
+          triades.set(id, proposta > 0 ? String(proposta) : '');
+          camp.disabled = false;
+          camp.value = triades.get(id);
+          camp.focus();
+          camp.select();
+        } else {
+          triades.delete(id);
+          camp.disabled = true;
+          camp.value = '';
+        }
+        actualitzarResum();
+      });
+
+      llista.addEventListener('input', (e) => {
+        const id = e.target.dataset.rpImport;
+        if (!id) return;
+        triades.set(id, e.target.value);
+        actualitzarResum();
+      });
+
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        btn.textContent = 'Registrant...';
+        const creats = []; // pagaments ja inserits, per poder-los desfer si falla un pas
+        const desfer = async () => {
+          for (const c of creats) await supabase.from('gaco_pagaments_factures_rebudes').delete().eq('id', c.pagamentId);
+          for (const c of creats) await recalcularFacturaRebuda(c.facturaId);
+        };
+
+        for (const [facturaId, valor] of triades) {
+          const { data: pag, error } = await supabase
+            .from('gaco_pagaments_factures_rebudes')
+            .insert({
+              factura_id: facturaId,
+              data_pagament: moviment.data_valor,
+              import: arrodonir(parseFloat(valor)),
+              compte_bancari_id: moviment.compte_id,
+              moviment_n43_id: moviment.id,
+            })
+            .select('id')
+            .single();
+          if (error) {
+            await desfer();
+            alert(
+              'Error registrant el pagament: ' + error.message +
+                (error.code === '23505' ? '\n\nLa base de dades només admet un pagament per moviment (índex únic). Cal treure aquest índex per poder repartir.' : '') +
+                '\n\nS\'han desfet els pagaments ja creats; no s\'ha canviat res.'
+            );
+            btn.disabled = false;
+            btn.textContent = 'Registrar el repartiment';
+            return;
+          }
+          creats.push({ pagamentId: pag.id, facturaId });
+          await recalcularFacturaRebuda(facturaId);
+        }
+
+        const { error: errMoviment } = await supabase
+          .from('gaco_moviments_n43')
+          .update({ estat: 'conciliat', tipus_moviment: 'fra_rebuda' })
+          .eq('id', moviment.id);
+        if (errMoviment) alert('Repartit, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
+
+        closeModal();
+        render();
+      });
+
+      pintar();
+      actualitzarResum();
+    },
+  });
+}
+
 async function vincular(moviment, facturaId) {
   const esRebuda = moviment.import < 0;
   const taula = esRebuda ? 'gaco_pagaments_factures_rebudes' : 'gaco_cobraments_factures_emeses';
@@ -937,6 +1096,7 @@ function obrirModalQueEs(m) {
     ? [
         ...(m.gaco_comptes?.tipus === 'credit' ? [['liquidacio-polissa', 'Liquidació trimestral de la pòlissa (interessos + comissions)']] : []),
         ['factura', "Pagament d'una factura o despesa ja registrada"],
+        ['repartir', 'Repartir entre diverses factures o despeses (p. ex. nòmines)'],
         ['nova-despesa', 'Nova despesa (comissió bancària, taxa...)'],
         ['prestec', 'Quota de préstec'],
         ['amortitzacio', 'Amortització extraordinària de préstec'],
@@ -973,6 +1133,8 @@ function obrirModalQueEs(m) {
           switch (btn.dataset.opcio) {
             case 'factura':
               return obrirModalVincular(m);
+            case 'repartir':
+              return obrirModalRepartir(m);
             case 'retrocessio':
               return obrirModalRetrocessio(m);
             case 'nova-despesa':
