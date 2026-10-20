@@ -821,6 +821,89 @@ async function vincularPrestec(moviment, quotaId) {
   render();
 }
 
+// --- Disposició d'un préstec (entrada de capital) ---
+// Lliga un ingrés al préstec corresponent. NO toca el capital del préstec: el capital inicial i
+// el pendent ja són els de la fitxa; això només deixa constància de quan i quant s'ha rebut
+// (a la fitxa del préstec es veu "rebut X de Y"). El moviment no passa per cap concepte d'ingrés.
+
+async function obrirModalDisposicioPrestec(m) {
+  const [{ data: prestecs, error }, { data: rebuts }] = await Promise.all([
+    supabase
+      .from('gaco_prestecs')
+      .select('id, descripcio, capital_inicial, gaco_entitats_bancaries ( nom )')
+      .eq('estat', 'actiu')
+      .order('descripcio'),
+    supabase.from('gaco_moviments_n43').select('prestec_id, import').not('prestec_id', 'is', null),
+  ]);
+  if (error) {
+    alert('Error carregant préstecs: ' + error.message);
+    return;
+  }
+  if (!prestecs?.length) {
+    alert("No hi ha cap préstec actiu. Dona'l d'alta a Finançament → Préstecs.");
+    return;
+  }
+  const rebutPer = new Map();
+  for (const r of rebuts ?? []) rebutPer.set(r.prestec_id, (rebutPer.get(r.prestec_id) ?? 0) + Number(r.import));
+
+  openModal({
+    title: `Disposició de préstec de ${formatImport(m.import)}`,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <p>${m.concepte ?? ''}</p>
+      <div class="modal-section">
+        <label>Préstec
+          <select id="dp-prestec">
+            <option value="">Selecciona...</option>
+            ${prestecs
+              .map((p) => {
+                const rebut = rebutPer.get(p.id) ?? 0;
+                return `<option value="${p.id}">${p.gaco_entitats_bancaries?.nom ?? '?'} · ${p.descripcio ?? ''} (rebut ${formatImport(rebut)} de ${formatImport(p.capital_inicial)})</option>`;
+              })
+              .join('')}
+          </select>
+        </label>
+        <p id="dp-avis" style="font-size:13px; color:#b00020;"></p>
+      </div>
+      <p style="font-size:13px; color: var(--gaco-text-secondary);">
+        Només lliga l'ingrés al préstec: no canvia el capital ni el pendent de la fitxa.
+      </p>
+      <button type="button" id="btn-dp-confirmar">Lligar i conciliar</button>
+    `,
+    onMount: (body) => {
+      const sel = body.querySelector('#dp-prestec');
+      sel.addEventListener('change', () => {
+        const p = prestecs.find((x) => x.id === sel.value);
+        const avis = body.querySelector('#dp-avis');
+        if (!p || p.capital_inicial === null) {
+          avis.textContent = '';
+          return;
+        }
+        const total = (rebutPer.get(p.id) ?? 0) + Number(m.import);
+        avis.textContent =
+          total > Number(p.capital_inicial) + 0.005
+            ? `Amb aquest ingrés es rebria ${formatImport(total)}, més que el capital del préstec (${formatImport(p.capital_inicial)}).`
+            : '';
+      });
+      body.querySelector('#btn-dp-confirmar').addEventListener('click', async () => {
+        if (!sel.value) return alert('Cal triar un préstec.');
+        body.querySelector('#btn-dp-confirmar').disabled = true;
+        const { error: errM } = await supabase
+          .from('gaco_moviments_n43')
+          .update({ estat: 'conciliat', tipus_moviment: 'altres', prestec_id: sel.value })
+          .eq('id', m.id);
+        if (errM) {
+          alert("Error lligant la disposició (has executat l'ALTER TABLE de prestec_id?): " + errM.message);
+          body.querySelector('#btn-dp-confirmar').disabled = false;
+          return;
+        }
+        closeModal();
+        render();
+      });
+    },
+  });
+}
+
 // --- Amortització extraordinària (cobrament d'ajuts, Secció de Crèdit) ---
 
 async function obrirModalAmortitzacioExtra(moviment) {
@@ -1118,6 +1201,7 @@ function obrirModalQueEs(m) {
       ]
     : [
         ['factura', "Cobrament d'una factura emesa"],
+        ['disposicio-prestec', "Disposició d'un préstec (entrada de capital)"],
         ['retrocessio', "Retrocessió d'una despesa ja pagada (comissió, etc.)"],
         ['traspas', "Traspàs des d'un altre compte propi"],
         ['soci', 'Moviment amb un soci o RNA (compte 555)'],
@@ -1149,6 +1233,8 @@ function obrirModalQueEs(m) {
               return obrirModalRepartir(m);
             case 'retrocessio':
               return obrirModalRetrocessio(m);
+            case 'disposicio-prestec':
+              return obrirModalDisposicioPrestec(m);
             case 'nova-despesa':
               return obrirModalNovaDespesa(m);
             case 'prestec':
