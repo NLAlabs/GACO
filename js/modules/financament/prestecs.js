@@ -374,6 +374,14 @@ async function obrirModalVeurePrestec(prestecId) {
 
   const fila = (etiqueta, valor) => `<p><span style="color: var(--gaco-text-secondary);">${etiqueta}:</span> ${valor ?? '—'}</p>`;
 
+  // Ingressos de capital lligats a aquest préstec des de Conciliació (disposicions).
+  const { data: disposicions } = await supabase
+    .from('gaco_moviments_n43')
+    .select('data_valor, import, concepte')
+    .eq('prestec_id', prestecId)
+    .order('data_valor');
+  const totalRebut = (disposicions ?? []).reduce((s, d) => s + Number(d.import), 0);
+
   openModal({
     title: v.descripcio ?? 'Préstec',
     wide: true,
@@ -402,6 +410,14 @@ async function obrirModalVeurePrestec(prestecId) {
       <div class="modal-section">
         ${fila('Carència', v.tipus_carencia ? (v.tipus_carencia === 'total' ? 'Total' : 'Només interessos') + ' fins ' + formatData(v.data_fi_carencia) : 'Sense carència')}
       </div>
+      ${
+        (disposicions ?? []).length
+          ? `<div class="modal-section">
+              <p class="modal-section-title">Disposicions rebudes (${formatImport(totalRebut)} de ${formatImport(v.capital_inicial)})</p>
+              ${disposicions.map((d) => `<p>${formatData(d.data_valor)} · ${formatImport(d.import)} — ${d.concepte ?? ''}</p>`).join('')}
+            </div>`
+          : ''
+      }
       ${v.notes ? `<div class="modal-section">${fila('Notes', v.notes)}</div>` : ''}
     `,
   });
