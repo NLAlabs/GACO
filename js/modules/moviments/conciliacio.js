@@ -467,12 +467,19 @@ async function obrirModalVincular(moviment) {
   });
 }
 
-// --- Repartir un càrrec entre diverses factures o despeses (p. ex. una transferència de nòmines) ---
-// Crea un pagament per factura, tots amb el mateix moviment_n43_id i l'import repartit
-// (pot ser un pagament parcial de cada factura). El moviment només es dóna per conciliat
-// si la suma repartida quadra al cèntim amb l'import del moviment.
+// --- Repartir un moviment entre diverses factures ---
+// Càrrec: una transferència que paga diverses factures o despeses (p. ex. nòmines).
+// Ingrés: un client que paga a terminis i amb un sol ingrés salda una factura i en cobra una altra en part.
+// Crea un pagament (o cobrament) per factura, tots amb el mateix moviment_n43_id i l'import repartit
+// (pot ser parcial). El moviment només es dóna per conciliat si la suma repartida quadra al cèntim.
 
 async function obrirModalRepartir(moviment) {
+  const esRebuda = moviment.import < 0;
+  const taula = esRebuda ? 'gaco_pagaments_factures_rebudes' : 'gaco_cobraments_factures_emeses';
+  const campData = esRebuda ? 'data_pagament' : 'data_cobrament';
+  const recalcular = esRebuda ? recalcularFacturaRebuda : recalcularFacturaEmesa;
+  const paraulaFet = esRebuda ? 'pagades' : 'cobrades';
+  const paraulaAccio = esRebuda ? 'pagament' : 'cobrament';
   let candidates;
   try {
     candidates = await cercarFacturesCandidates(moviment);
@@ -490,8 +497,12 @@ async function obrirModalRepartir(moviment) {
       <p>${formatData(moviment.data_valor)} · ${etiquetaCompte(moviment.gaco_comptes)}</p>
       <p>${moviment.concepte ?? ''}</p>
       <p style="font-size:13px; color: var(--gaco-text-secondary);">
-        Marca cada factura o despesa i indica quants euros en paga aquest moviment (pot ser un pagament parcial,
-        o fins i tot més del pendent si s'havia pagat una quantitat fixa). La suma ha de coincidir amb ${formatImport(total)}.
+        ${
+          esRebuda
+            ? "Marca cada factura o despesa i indica quants euros en paga aquest moviment (pot ser un pagament parcial, o fins i tot més del pendent si s'havia pagat una quantitat fixa)."
+            : 'Marca cada factura emesa i indica quants euros en cobra aquest ingrés (pot ser un cobrament parcial).'
+        }
+        La suma ha de coincidir amb ${formatImport(total)}.
       </p>
       <div class="modal-section">
         <input type="text" id="rp-cerca" placeholder="Filtrar per nom o número..." style="width:100%; padding:8px;" />
@@ -529,7 +540,7 @@ async function obrirModalRepartir(moviment) {
           quadra ? '✔ quadra' : `<span style="color:#b00020;">${falta > 0 ? 'falta ' + formatImport(falta) : 'sobren ' + formatImport(-falta)}</span>`
         }${imports_ok ? '' : ' · <span style="color:#b00020;">cada import ha de ser major que zero</span>'}${
           excessos
-            ? `<br><span style="font-weight:normal; font-size:13px;">⚠ ${excessos} factura(es) quedaran pagades de més (${formatImport(arrodonir(importExces))} en total): el pendent serà negatiu fins que es compensi.</span>`
+            ? `<br><span style="font-weight:normal; font-size:13px;">⚠ ${excessos} factura(es) quedaran ${paraulaFet} de més (${formatImport(arrodonir(importExces))} en total): el pendent serà negatiu fins que es compensi.</span>`
             : ''
         }`;
         btn.disabled = !(triades.size > 0 && quadra && imports_ok);
@@ -589,18 +600,18 @@ async function obrirModalRepartir(moviment) {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         btn.textContent = 'Registrant...';
-        const creats = []; // pagaments ja inserits, per poder-los desfer si falla un pas
+        const creats = []; // pagaments/cobraments ja inserits, per poder-los desfer si falla un pas
         const desfer = async () => {
-          for (const c of creats) await supabase.from('gaco_pagaments_factures_rebudes').delete().eq('id', c.pagamentId);
-          for (const c of creats) await recalcularFacturaRebuda(c.facturaId);
+          for (const c of creats) await supabase.from(taula).delete().eq('id', c.pagamentId);
+          for (const c of creats) await recalcular(c.facturaId);
         };
 
         for (const [facturaId, valor] of triades) {
           const { data: pag, error } = await supabase
-            .from('gaco_pagaments_factures_rebudes')
+            .from(taula)
             .insert({
               factura_id: facturaId,
-              data_pagament: moviment.data_valor,
+              [campData]: moviment.data_valor,
               import: arrodonir(parseFloat(valor)),
               compte_bancari_id: moviment.compte_id,
               moviment_n43_id: moviment.id,
@@ -610,21 +621,21 @@ async function obrirModalRepartir(moviment) {
           if (error) {
             await desfer();
             alert(
-              'Error registrant el pagament: ' + error.message +
-                (error.code === '23505' ? '\n\nLa base de dades només admet un pagament per moviment (índex únic). Cal treure aquest índex per poder repartir.' : '') +
-                '\n\nS\'han desfet els pagaments ja creats; no s\'ha canviat res.'
+              `Error registrant el ${paraulaAccio}: ` + error.message +
+                (error.code === '23505' ? `\n\nLa base de dades només admet un ${paraulaAccio} per moviment (índex únic). Cal treure aquest índex per poder repartir.` : '') +
+                `\n\nS'han desfet els ${paraulaAccio}s ja creats; no s'ha canviat res.`
             );
             btn.disabled = false;
             btn.textContent = 'Registrar el repartiment';
             return;
           }
           creats.push({ pagamentId: pag.id, facturaId });
-          await recalcularFacturaRebuda(facturaId);
+          await recalcular(facturaId);
         }
 
         const { error: errMoviment } = await supabase
           .from('gaco_moviments_n43')
-          .update({ estat: 'conciliat', tipus_moviment: 'fra_rebuda' })
+          .update({ estat: 'conciliat', tipus_moviment: esRebuda ? 'fra_rebuda' : 'fra_emesa' })
           .eq('id', moviment.id);
         if (errMoviment) alert('Repartit, però hi ha hagut un error marcant el moviment com a conciliat: ' + errMoviment.message);
 
@@ -1201,6 +1212,7 @@ function obrirModalQueEs(m) {
       ]
     : [
         ['factura', "Cobrament d'una factura emesa"],
+        ['repartir', 'Repartir entre diverses factures emeses (cobrament de més d\'una factura o parcial)'],
         ['disposicio-prestec', "Disposició d'un préstec (entrada de capital)"],
         ['retrocessio', "Retrocessió d'una despesa ja pagada (comissió, etc.)"],
         ['traspas', "Traspàs des d'un altre compte propi"],
