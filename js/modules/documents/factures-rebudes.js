@@ -552,12 +552,14 @@ function htmlSeccioD() {
         El registre normal serà via Conciliació bancària. Fes servir això només per a pagaments sense N43 encara (efectiu, avançaments...).
       </p>
       <div id="llista-pagaments" style="margin-bottom:10px;"></div>
+      <div id="llista-compensades"></div>
       <form id="form-pagament" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
         ${camp('Data pagament', `<input type="date" id="pg-data" required />`)}
         ${camp('Import (€)', `<input type="number" step="0.01" id="pg-import" required style="width:120px;" />`)}
         ${camp('Tipus', `<select id="pg-tipus"><option value="pagament">Pagament</option><option value="devolucio">Devolució</option></select>`)}
         ${camp('Compte (opcional)', `<select id="pg-compte"><option value="">Selecciona...</option>${comptesCache.map((c) => `<option value="${c.id}">${c.entitatNom} · ${c.descripcio ?? c.num_compte}</option>`).join('')}</select>`)}
         ${camp('Pagat per un soci (opcional)', `<select id="pg-soci"><option value="">No (banc o efectiu)</option>${socisCache.map((sc) => `<option value="${sc.id}">${sc.nom}</option>`).join('')}</select>`)}
+        ${camp('Compensat amb la factura (opcional)', `<select id="pg-compensa" style="min-width:240px;"><option value="">No</option></select>`)}
         ${camp('Notes', `<input type="text" id="pg-notes" style="min-width:160px;" />`)}
         <button type="submit">Registrar pagament</button>
       </form>
@@ -610,6 +612,8 @@ function vincularModalFactura(body, f) {
   carregarLinies(body, f.id);
   carregarAdjunts(body, f.id);
   carregarPagaments(body, f.id);
+  carregarCompensades(body, f.id);
+  carregarFacturesPerCompensar(body, f.id);
 }
 
 async function desarCapcalera(body, facturaId) {
@@ -905,6 +909,22 @@ async function eliminarAdjunt(adjuntId, path, body, facturaId) {
 // Pagaments manuals (gaco_pagaments_factures_rebudes)
 // -----------------------------------------------------------------------
 
+// Nom curt d'una factura per mostrar-la com a enllaç ("PROVEÏDOR NÚM.").
+function nomFacturaCurt(f) {
+  return `${f.proveidor?.nom ?? f.contrapart_nom ?? '—'} ${f.num_factura ?? ''}`.trim();
+}
+
+// Els enllaços [data-obrir-factura] tanquen el modal actual i obren l'altra factura.
+function vincularObrirFactura(contenidor) {
+  contenidor.querySelectorAll('[data-obrir-factura]').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      closeModal();
+      obrirModalFactura(a.dataset.obrirFactura);
+    });
+  });
+}
+
 async function carregarPagaments(body, facturaId) {
   const contenidor = body.querySelector('#llista-pagaments');
   contenidor.innerHTML = '<p>Carregant pagaments...</p>';
@@ -920,6 +940,18 @@ async function carregarPagaments(body, facturaId) {
     return;
   }
 
+  // Noms de les factures amb què es compensa (consulta a part: la taula de pagaments té dues
+  // relacions amb factures i encastar-les donaria "more than one relationship").
+  const idsCompensa = [...new Set((data ?? []).map((p) => p.factura_compensada_amb_id).filter(Boolean))];
+  const nomsCompensa = new Map();
+  if (idsCompensa.length) {
+    const { data: fs } = await supabase
+      .from('gaco_factures_rebudes')
+      .select('id, num_factura, contrapart_nom, proveidor:gaco_proveidors(nom)')
+      .in('id', idsCompensa);
+    for (const f of fs ?? []) nomsCompensa.set(f.id, nomFacturaCurt(f));
+  }
+
   if (!data || data.length === 0) {
     contenidor.innerHTML = '<p style="color:var(--gaco-text-secondary); font-size:13px;">Cap pagament registrat encara.</p>';
   } else {
@@ -929,7 +961,15 @@ async function carregarPagaments(body, facturaId) {
       <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:0.5px solid var(--gaco-border); font-size:13px;">
         <div>
           ${formatData(p.data_pagament)} · ${p.tipus_moviment === 'devolucio' ? 'Devolució' : 'Pagament'}
-          ${p.soci_id ? ` · avançat per ${socisCache.find((sc) => sc.id === p.soci_id)?.nom ?? 'un soci'}` : p.compte ? ` · ${p.compte.descripcio ?? p.compte.num_compte}` : ' · manual'}
+          ${
+            p.factura_compensada_amb_id
+              ? ` · compensat amb <a href="#" data-obrir-factura="${p.factura_compensada_amb_id}">${nomsCompensa.get(p.factura_compensada_amb_id) ?? 'una altra factura'}</a>`
+              : p.soci_id
+                ? ` · avançat per ${socisCache.find((sc) => sc.id === p.soci_id)?.nom ?? 'un soci'}`
+                : p.compte
+                  ? ` · ${p.compte.descripcio ?? p.compte.num_compte}`
+                  : ' · manual'
+          }
           ${p.notes ? ` — ${p.notes}` : ''}
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
@@ -941,12 +981,63 @@ async function carregarPagaments(body, facturaId) {
       )
       .join('');
 
+    vincularObrirFactura(contenidor);
     contenidor.querySelectorAll('[data-eliminar-pagament]').forEach((btn) => {
       btn.addEventListener('click', () => eliminarPagament(btn.dataset.eliminarPagament, body, facturaId));
     });
   }
 
   await recalcularPagamentsCapcalera(facturaId);
+}
+
+// Factures que ESTA factura compensa (l'altre sentit de l'enllaç): pagaments d'altres factures
+// que s'han saldat contra aquesta.
+async function carregarCompensades(body, facturaId) {
+  const contenidor = body.querySelector('#llista-compensades');
+  if (!contenidor) return;
+  const { data: pags, error } = await supabase
+    .from('gaco_pagaments_factures_rebudes')
+    .select('id, factura_id, import, data_pagament')
+    .eq('factura_compensada_amb_id', facturaId);
+  if (error || !pags?.length) {
+    contenidor.innerHTML = '';
+    return;
+  }
+  const ids = [...new Set(pags.map((p) => p.factura_id))];
+  const { data: fs } = await supabase
+    .from('gaco_factures_rebudes')
+    .select('id, num_factura, contrapart_nom, proveidor:gaco_proveidors(nom)')
+    .in('id', ids);
+  const perId = new Map((fs ?? []).map((f) => [f.id, f]));
+  contenidor.innerHTML =
+    `<p style="font-size:13px; font-weight:500; margin:10px 0 4px;">Aquesta factura compensa:</p>` +
+    pags
+      .map((p) => {
+        const f = perId.get(p.factura_id);
+        return `<div style="font-size:13px; padding:4px 0; border-top:0.5px solid var(--gaco-border);">
+          ${formatData(p.data_pagament)} · <a href="#" data-obrir-factura="${p.factura_id}">${f ? nomFacturaCurt(f) : 'una altra factura'}</a> — ${formatImport(p.import)}
+        </div>`;
+      })
+      .join('');
+  vincularObrirFactura(contenidor);
+}
+
+// Omple el desplegable "Compensat amb la factura" amb les 200 factures més recents (menys aquesta).
+async function carregarFacturesPerCompensar(body, facturaId) {
+  const sel = body.querySelector('#pg-compensa');
+  if (!sel) return;
+  const { data } = await supabase
+    .from('gaco_factures_rebudes')
+    .select('id, num_factura, data_factura, total, estat, contrapart_nom, proveidor:gaco_proveidors(nom)')
+    .neq('id', facturaId)
+    .order('data_factura', { ascending: false })
+    .limit(200);
+  for (const f of data ?? []) {
+    const o = document.createElement('option');
+    o.value = f.id;
+    o.textContent = `${nomFacturaCurt(f)} · ${formatData(f.data_factura)} · ${formatImport(f.total)}${f.estat === 'pagada' ? ' (pagada)' : ''}`;
+    sel.appendChild(o);
+  }
 }
 
 async function altaPagament(e, body, facturaId) {
@@ -958,8 +1049,10 @@ async function altaPagament(e, body, facturaId) {
   const compteId = body.querySelector('#pg-compte').value || null;
   const notes = body.querySelector('#pg-notes').value.trim() || null;
   const sociId = body.querySelector('#pg-soci').value || null;
+  const compensaId = body.querySelector('#pg-compensa').value || null;
 
   if (!dataPagament || !importIntroduit) return alert('Cal indicar data i import.');
+  if (compensaId && (compteId || sociId)) return alert('Un pagament per compensació no pot tenir compte ni soci: deixa-ho en blanc.');
   if (sociId && tipusMoviment === 'devolucio') return alert('Una devolució no es pot registrar com a pagament d\'un soci.');
 
   const importAmbSigne = tipusMoviment === 'devolucio' ? -Math.abs(importIntroduit) : Math.abs(importIntroduit);
@@ -973,6 +1066,7 @@ async function altaPagament(e, body, facturaId) {
       tipus_moviment: tipusMoviment,
       compte_bancari_id: sociId ? null : compteId,
       soci_id: sociId,
+      factura_compensada_amb_id: compensaId,
       notes,
     })
     .select('id')
@@ -999,6 +1093,7 @@ async function altaPagament(e, body, facturaId) {
 
   e.target.reset();
   await carregarPagaments(body, facturaId);
+  await carregarCompensades(body, facturaId);
 }
 
 async function eliminarPagament(pagamentId, body, facturaId) {
