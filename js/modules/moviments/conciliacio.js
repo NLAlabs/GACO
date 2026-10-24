@@ -325,7 +325,7 @@ async function cercarPagamentsManuals(moviment) {
     .gte(campData, des)
     .lte(campData, fins);
   // Els pagaments d'un soci (compensacions amb el compte corrent) no han passat pel banc.
-  if (esRebuda) consulta = consulta.is('soci_id', null);
+  if (esRebuda) consulta = consulta.is('soci_id', null).is('factura_compensada_amb_id', null);
   const { data: pagaments, error } = await consulta;
   if (error) throw error;
   if (!pagaments?.length) return [];
