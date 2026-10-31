@@ -32,10 +32,11 @@ const SECCIONS = {
   },
   financament: {
     label: 'Finançament',
-    subrutes: {
+        subrutes: {
       prestecs: { label: 'Préstecs / leasing', modul: './modules/financament/prestecs.js' },
       polisses: { label: 'Pòlisses / confirming', modul: './modules/financament/polisses.js' },
       socis: { label: 'Compte corrent socis', modul: './modules/financament/socis.js' },
+      treballadors: { label: 'Compte treballadors', modul: './modules/financament/treballadors.js' },
     },
     defaultSubruta: 'prestecs',
   },
