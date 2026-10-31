@@ -708,6 +708,7 @@ function pintarLinies(body, facturaId, linies) {
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
         <span>${formatImport(l.total_linia)} ${l.categoria?.tipus !== 'suplits' ? `+ ${formatImport(l.iva)} IVA` : ''}</span>
+		<button data-editar-linia="${l.id}" title="Editar línia">✎</button>
         <button data-eliminar-linia="${l.id}" title="Eliminar línia">✕</button>
       </div>
     </div>
@@ -754,8 +755,13 @@ async function altaLinia(e, body, facturaId) {
     immobilitzat_id: categoria?.tipus === 'actiu' ? (body.querySelector('#ln-immobilitzat').value || null) : null,
   };
 
-  const { error } = await supabase.from('gaco_detall_factures_rebudes').insert(novaLinia);
-  if (error) return alert(`Error afegint línia: ${error.message}`);
+  const editantId = e.target.dataset.editantId;
+  const { factura_id, ...camps } = novaLinia;
+  const { error } = editantId
+    ? await supabase.from('gaco_detall_factures_rebudes').update(camps).eq('id', editantId)
+    : await supabase.from('gaco_detall_factures_rebudes').insert(novaLinia);
+  if (error) return alert(`Error ${editantId ? 'desant' : 'afegint'} la línia: ${error.message}`);
+  if (editantId) sortirEdicioLinia(body);
 
   body.querySelector('#ln-descripcio').value = '';
   body.querySelector('#ln-quantitat').value = 1;
@@ -776,6 +782,55 @@ async function eliminarLinia(liniaId, body, facturaId) {
   const { error } = await supabase.from('gaco_detall_factures_rebudes').delete().eq('id', liniaId);
   if (error) return alert(`Error eliminant línia: ${error.message}`);
   await carregarLinies(body, facturaId);
+}
+
+contenidor.querySelectorAll('[data-editar-linia]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const l = linies.find((x) => x.id === btn.dataset.editarLinia);
+    carregarLiniaAlFormulari(body, l);
+  });
+});
+
+function carregarLiniaAlFormulari(body, l) {
+  const form = body.querySelector('#form-linia');
+  form.dataset.editantId = l.id;
+
+  const cat = body.querySelector('#ln-categoria');
+  cat.value = l.categoria_id;
+  cat.dispatchEvent(new Event('change')); // mostra suplit/immobilitzat si cal
+
+  body.querySelector('#ln-descripcio').value = l.descripcio ?? '';
+  body.querySelector('#ln-quantitat').value = l.quantitat ?? 1;
+  body.querySelector('#ln-preu').value = l.preu_unitari ?? '';
+  body.querySelector('#ln-descompte-pct').value = l.descompte_pct ?? '';
+  body.querySelector('#ln-iva-pct').value = l.iva_pct ?? 0;
+  const sup = body.querySelector('#ln-proveidor-suplit');
+  const imm = body.querySelector('#ln-immobilitzat');
+  if (sup) sup.value = l.proveidor_suplit_id ?? '';
+  if (imm) imm.value = l.immobilitzat_id ?? '';
+
+  form.querySelector('button[type="submit"]').textContent = 'Desar línia';
+  if (!form.querySelector('#ln-cancelar')) {
+    const c = document.createElement('button');
+    c.type = 'button';
+    c.id = 'ln-cancelar';
+    c.textContent = 'Cancel·lar';
+    c.addEventListener('click', () => sortirEdicioLinia(body));
+    form.querySelector('button[type="submit"]').after(c);
+  }
+  form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function sortirEdicioLinia(body) {
+  const form = body.querySelector('#form-linia');
+  delete form.dataset.editantId;
+  form.querySelector('button[type="submit"]').textContent = 'Afegir línia';
+  form.querySelector('#ln-cancelar')?.remove();
+  body.querySelector('#ln-descripcio').value = '';
+  body.querySelector('#ln-quantitat').value = 1;
+  body.querySelector('#ln-preu').value = '';
+  body.querySelector('#ln-descompte-pct').value = '';
+  body.querySelector('#ln-iva-pct').value = 21;
 }
 
 // -----------------------------------------------------------------------
