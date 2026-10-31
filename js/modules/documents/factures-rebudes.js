@@ -716,8 +716,15 @@ function pintarLinies(body, facturaId, linies) {
     )
     .join('');
 
-  contenidor.querySelectorAll('[data-eliminar-linia]').forEach((btn) => {
+    contenidor.querySelectorAll('[data-eliminar-linia]').forEach((btn) => {
     btn.addEventListener('click', () => eliminarLinia(btn.dataset.eliminarLinia, body, facturaId));
+  });
+
+  contenidor.querySelectorAll('[data-editar-linia]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const l = linies.find((x) => x.id === btn.dataset.editarLinia);
+      carregarLiniaAlFormulari(body, l);
+    });
   });
 }
 
@@ -784,12 +791,6 @@ async function eliminarLinia(liniaId, body, facturaId) {
   await carregarLinies(body, facturaId);
 }
 
-contenidor.querySelectorAll('[data-editar-linia]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const l = linies.find((x) => x.id === btn.dataset.editarLinia);
-    carregarLiniaAlFormulari(body, l);
-  });
-});
 
 function carregarLiniaAlFormulari(body, l) {
   const form = body.querySelector('#form-linia');
