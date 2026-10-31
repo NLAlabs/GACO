@@ -183,4 +183,66 @@ function obrirExtracte(id) {
         </table>
       </div>
       <p>Saldo final: ${htmlSaldo(saldoDe(id), t?.nom ?? '')}</p>
-      <p style="font-size:12px; color: var(--gaco-text-secondary);">Les nòmines i els pagaments es gestionen des de Factures rebudes. 🔗 = bestreta lligada a un moviment bancari (es gestiona des de
+      <p style="font-size:12px; color: var(--gaco-text-secondary);">Les nòmines i els pagaments es gestionen des de Factures rebudes. 🔗 = bestreta lligada a un moviment bancari (es gestiona des de Conciliació).</p>
+    `,
+    onMount: (body) => {
+      body.querySelectorAll('[data-esborrar]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Esborrar aquest apunt?')) return;
+          const { error } = await supabase.from('gaco_treballadors_apunts').delete().eq('id', btn.dataset.esborrar);
+          if (error) return alert('Error esborrant: ' + error.message);
+          closeModal();
+          await render();
+          obrirExtracte(id);
+        });
+      });
+    },
+  });
+}
+
+function obrirNouApunt(id) {
+  const t = treballadors.find((x) => x.id === id);
+  openModal({
+    title: `Nou apunt — ${t?.nom ?? ''}`,
+    bodyHtml: `
+      <div class="modal-section">
+        <label>Data <input type="date" id="ta-data" value="${avui()}" /></label>
+        <label>Tipus
+          <select id="ta-tipus">
+            <option value="bestreta">Bestreta en efectiu (ell et deu més)</option>
+            <option value="ajust">Ajust (regularització)</option>
+          </select>
+        </label>
+        <label>Sentit
+          <select id="ta-signe">
+            <option value="-1">Ell deu més a la SL (−)</option>
+            <option value="1">La SL li deu més (+)</option>
+          </select>
+        </label>
+        <label>Import (€, positiu) <input type="number" step="0.01" min="0" id="ta-import" /></label>
+        <label>Motiu <input type="text" id="ta-motiu" /></label>
+      </div>
+      <button type="button" id="btn-desar-ta">Desar</button>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-desar-ta').addEventListener('click', async () => {
+        const data = body.querySelector('#ta-data').value;
+        const imp = parseFloat(body.querySelector('#ta-import').value);
+        if (!data) return alert('Cal indicar la data.');
+        if (!(imp > 0)) return alert("L'import ha de ser major que zero.");
+        const tipus = body.querySelector('#ta-tipus').value;
+        const { error } = await supabase.from('gaco_treballadors_apunts').insert({
+          treballador_id: id,
+          data,
+          concepte: tipus === 'bestreta' ? 'Bestreta' : 'Ajust',
+          tipus_moviment: tipus,
+          import: arrodonir2(imp * Number(body.querySelector('#ta-signe').value)),
+          motiu: body.querySelector('#ta-motiu').value.trim() || null,
+        });
+        if (error) return alert("Error desant l'apunt: " + error.message);
+        closeModal();
+        render();
+      });
+    },
+  });
+}
