@@ -1208,6 +1208,7 @@ function obrirModalQueEs(m) {
         ['amortitzacio', 'Amortització extraordinària de préstec'],
         ['traspas', 'Traspàs a un altre compte propi'],
         ['soci', 'Moviment amb un soci o RNA (compte 555)'],
+		['bestreta', m.import < 0 ? 'Bestreta a un treballador' : "Devolució de bestreta d'un treballador"],
         ['sense-factura', 'Sense factura (altres)'],
       ]
     : [
@@ -1217,6 +1218,7 @@ function obrirModalQueEs(m) {
         ['retrocessio', "Retrocessió d'una despesa ja pagada (comissió, etc.)"],
         ['traspas', "Traspàs des d'un altre compte propi"],
         ['soci', 'Moviment amb un soci o RNA (compte 555)'],
+		['bestreta', m.import < 0 ? 'Bestreta a un treballador' : "Devolució de bestreta d'un treballador"],
         ['sense-factura', 'Ingrés sense despesa relacionada (ajut o subvenció, altres)'],
       ];
 
@@ -1255,6 +1257,8 @@ function obrirModalQueEs(m) {
               return obrirModalAmortitzacioExtra(m);
             case 'traspas':
               return obrirModalTraspasManual(m);
+			case 'bestreta':
+			  return obrirModalBestreta(m);  
             case 'sense-factura':
               return obrirModalClassificar(m);
             case 'liquidacio-polissa':
@@ -1828,6 +1832,78 @@ async function obrirModalTraspasManual(m) {
           .update({ estat: 'traspas_intern', tipus_moviment: 'traspas' })
           .in('id', ids);
         if (errUpd) return alert('Error confirmant el traspàs: ' + errUpd.message);
+        closeModal();
+        render();
+      });
+    },
+  });
+}
+// --- Bestreta a un treballador (o devolució) ---
+// L'apunt té el mateix signe que el moviment bancari: una sortida (bestreta) és negativa,
+// una entrada (devolució) és positiva. El sou normal es concilia com a pagament de la despesa.
+
+async function obrirModalBestreta(m) {
+  const { data: persones, error } = await supabase
+    .from('gaco_treballadors')
+    .select('id, nom')
+    .eq('actiu', true)
+    .order('nom');
+  if (error) {
+    alert('Error carregant els treballadors: ' + error.message);
+    return;
+  }
+  if (!persones?.length) {
+    alert('Cap treballador donat d\'alta.');
+    return;
+  }
+
+  openModal({
+    title: `${m.import < 0 ? 'Bestreta' : 'Devolució de bestreta'} de ${formatImport(m.import)}`,
+    bodyHtml: `
+      <p>${formatData(m.data_valor)} · ${etiquetaCompte(m.gaco_comptes)}</p>
+      <p>${m.concepte ?? ''}</p>
+      <div class="modal-section">
+        <label>Treballador
+          <select id="bt-persona">
+            <option value="">Selecciona...</option>
+            ${persones.map((p) => `<option value="${p.id}">${p.nom}</option>`).join('')}
+          </select>
+        </label>
+        <label>Motiu <input type="text" id="bt-motiu" /></label>
+      </div>
+      <button type="button" id="btn-bt-confirmar">Registrar i conciliar</button>
+    `,
+    onMount: (body) => {
+      body.querySelector('#btn-bt-confirmar').addEventListener('click', async () => {
+        const id = body.querySelector('#bt-persona').value;
+        if (!id) return alert('Cal triar un treballador.');
+        body.querySelector('#btn-bt-confirmar').disabled = true;
+
+        const { error: errA } = await supabase.from('gaco_treballadors_apunts').insert({
+          treballador_id: id,
+          data: m.data_valor,
+          concepte: m.import < 0 ? 'Bestreta' : 'Devolució de bestreta',
+          tipus_moviment: 'bestreta',
+          import: m.import,
+          motiu: body.querySelector('#bt-motiu').value.trim() || null,
+          moviment_n43_id: m.id,
+        });
+        if (errA) {
+          alert("Error registrant l'apunt: " + errA.message);
+          body.querySelector('#btn-bt-confirmar').disabled = false;
+          return;
+        }
+
+        const { error: errM } = await supabase
+          .from('gaco_moviments_n43')
+          .update({ estat: 'conciliat', tipus_moviment: 'altres' })
+          .eq('id', m.id);
+        if (errM) {
+          await supabase.from('gaco_treballadors_apunts').delete().eq('moviment_n43_id', m.id);
+          alert('Error conciliant el moviment: ' + errM.message);
+          body.querySelector('#btn-bt-confirmar').disabled = false;
+          return;
+        }
         closeModal();
         render();
       });
