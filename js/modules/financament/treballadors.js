@@ -246,3 +246,7 @@ function obrirNouApunt(id) {
     },
   });
 }
+export async function saldoTotal() {
+  await carregarDades();
+  return arrodonir2(treballadors.reduce((s, t) => s + saldoDe(t.id), 0));
+}
