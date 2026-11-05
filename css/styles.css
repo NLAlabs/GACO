@@ -358,3 +358,25 @@ body {
   color: #fff;
   border: none;
 }
+
+/* ---------- Inici ---------- */
+.inici-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.inici-grid .card { margin-bottom: 0; display: flex; flex-direction: column; gap: 12px; }
+.inici-etiq { font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gaco-text-secondary); font-weight: 600; margin: 0; }
+.inici-gran { font-size: 34px; font-weight: 600; line-height: 1.1; margin: 0; font-variant-numeric: tabular-nums; }
+.inici-fila { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.inici-sub { font-size: 12px; color: var(--gaco-text-secondary); margin: 0; }
+.inici-bar { height: 8px; background: var(--gaco-accent-soft); border-radius: 4px; margin: 6px 0 4px; }
+.inici-bar > div { height: 8px; border-radius: 4px; background: var(--gaco-success); }
+.inici-bar.avis > div { background: #b26a00; }
+.inici-bar.perill > div { background: #b00020; }
+.inici-text-perill { color: #b00020; }
+.inici-text-avis { color: #b26a00; }
+.inici-op { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; font-size: 14px; }
+.inici-op b { min-width: 44px; height: 38px; border-radius: 8px; background: var(--gaco-accent-soft); display: flex; align-items: center; justify-content: center; font-size: 17px; }
+.inici-op.avis b { background: #fbebd3; color: #8a5200; }
+.inici-op.zero { opacity: 0.5; }
+.inici-taula { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 6px 10px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.inici-taula .cap { font-size: 12px; color: var(--gaco-text-secondary); }
+.inici-taula .dr { text-align: right; }
+.inici-gran-pag { background: #fbf1f2; border: 1px solid #ebc9cd; border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
