@@ -309,7 +309,8 @@ async function buscarFacturesVinculades(idsConciliats) {
 
 function htmlFila(m) {
   const vincle = estat.factures.get(m.id);
-  const tipus = vincle ? '' : ETIQUETES_TIPUS[m.tipus_moviment] ?? '';
+  const tipusText = ETIQUETES_TIPUS[m.tipus_moviment] ?? '';
+  const tipus = vincle || tipusText === (ETIQUETES_ESTAT[m.estat] ?? '') ? '' : tipusText;
   const banc = estat.ambSaldo ? '' : `${esc(m.gaco_comptes?.gaco_entitats_bancaries?.nom ?? '?')} · ${esc(m.gaco_comptes?.num_compte ?? '?')}`;
   const sec = [banc, vincle ? '↳ ' + esc(vincle) : esc(tipus)].filter(Boolean).join(' · ');
   const oper = m.data_operacio && String(m.data_operacio).slice(0, 10) !== m.data_valor ? formatData(m.data_operacio) : '';
