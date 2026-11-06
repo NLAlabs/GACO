@@ -192,6 +192,10 @@ async function cercarAmbSaldo(compteId, { dataDes, dataFins, signe, importDes, i
     return;
   }
 
+  // Dins del mateix dia, les entrades abans que les sortides: els traspassos "per atendre"
+  // arriben abans dels càrrecs i el saldo intradia no queda negatiu. El saldo de final de dia no canvia.
+  moviments.sort((a, b) => (a.data_valor < b.data_valor ? -1 : a.data_valor > b.data_valor ? 1 : (b.import > 0) - (a.import > 0)));
+
   let acumulat = saldoBase;
   const ambSaldo = moviments.map((m) => {
     acumulat = Math.round((acumulat + m.import) * 100) / 100;
@@ -310,7 +314,7 @@ async function buscarFacturesVinculades(idsConciliats) {
 function htmlFila(m) {
   const vincle = estat.factures.get(m.id);
   const tipusText = ETIQUETES_TIPUS[m.tipus_moviment] ?? '';
-  const tipus = vincle || tipusText === (ETIQUETES_ESTAT[m.estat] ?? '') ? '' : tipusText;
+  const tipus = vincle || tipusText === (ETIQUETES_ESTAT[m.estat] ?? '') ? '' : tipusText; // evita "Traspàs" repetit
   const banc = estat.ambSaldo ? '' : `${esc(m.gaco_comptes?.gaco_entitats_bancaries?.nom ?? '?')} · ${esc(m.gaco_comptes?.num_compte ?? '?')}`;
   const sec = [banc, vincle ? '↳ ' + esc(vincle) : esc(tipus)].filter(Boolean).join(' · ');
   const oper = m.data_operacio && String(m.data_operacio).slice(0, 10) !== m.data_valor ? formatData(m.data_operacio) : '';
@@ -430,10 +434,12 @@ async function exportarPdf() {
 function descripcioFiltre() {
   const f = estat.filtre;
   const parts = [];
-  if (f.dataDes || f.dataFins) parts.push(`Periode: ${f.dataDes ? formatData(f.dataDes) : '...'} - ${f.dataFins ? formatData(f.dataFins) : '...'}`);
+  if (f.dataDes && f.dataFins) parts.push(`Període: ${formatData(f.dataDes)} - ${formatData(f.dataFins)}`);
+  else if (f.dataDes) parts.push(`Des de ${formatData(f.dataDes)}`);
+  else if (f.dataFins) parts.push(`Fins a ${formatData(f.dataFins)}`);
   else parts.push("Tot l'historial");
-  if (f.signe === 'carrec') parts.push('Nomes carrecs');
-  if (f.signe === 'abonament') parts.push('Nomes abonaments');
+  if (f.signe === 'carrec') parts.push('Només càrrecs');
+  if (f.signe === 'abonament') parts.push('Només abonaments');
   if (f.importDes !== null && f.importDes !== undefined) parts.push(`Import des de ${formatImport(f.importDes)}`);
   if (f.importFins !== null && f.importFins !== undefined) parts.push(`Import fins a ${formatImport(f.importFins)}`);
   return parts.join(' · ');
@@ -479,7 +485,7 @@ function generarPdf() {
       : { 0: { cellWidth: 22 }, 1: { cellWidth: 30 }, 3: { halign: 'right', cellWidth: 30 } },
     didDrawPage: () => {
       doc.setFontSize(8);
-      doc.text(`Pagina ${doc.internal.getCurrentPageInfo().pageNumber}`, 196, 290, { align: 'right' });
+      doc.text(`Pàgina ${doc.internal.getCurrentPageInfo().pageNumber}`, 196, 290, { align: 'right' });
     },
   });
 
