@@ -380,3 +380,37 @@ body {
 .inici-taula .cap { font-size: 12px; color: var(--gaco-text-secondary); }
 .inici-taula .dr { text-align: right; }
 .inici-gran-pag { background: #fbf1f2; border: 1px solid #ebc9cd; border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+
+/* ---------- Historial (format extracte) ---------- */
+.hist-filtres { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; padding: 14px 16px; }
+.hist-filtres label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--gaco-text-secondary); }
+.hist-filtres select, .hist-filtres input { font-size: 13px; padding: 6px 8px; border: 1px solid var(--gaco-border); border-radius: var(--gaco-radius); background: #fff; }
+.hist-filtres input[type="number"] { width: 100px; }
+.hist-filtres button { padding: 7px 14px; border-radius: var(--gaco-radius); border: 1px solid var(--gaco-border); background: #fff; cursor: pointer; font-size: 13px; }
+.hist-filtres button.primari { background: var(--gaco-accent); color: #fff; border-color: var(--gaco-accent); }
+.hist-filtres button:disabled { opacity: 0.5; cursor: default; }
+.hist-taula-wrap { background: var(--gaco-surface); border: 1px solid var(--gaco-border); border-radius: 12px; overflow: hidden; }
+.hist-taula { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; font-variant-numeric: tabular-nums; }
+.hist-taula th { text-align: left; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gaco-text-secondary); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--gaco-border); background: #fdfafb; }
+.hist-taula th.dr, .hist-taula td.dr { text-align: right; }
+.hist-taula th.hist-ord { cursor: pointer; user-select: none; color: var(--gaco-accent); }
+.hist-taula td { padding: 7px 12px; border-bottom: 1px solid #f1e6e8; vertical-align: top; }
+.hist-fila { cursor: pointer; }
+.hist-fila:hover { background: #fdf7f8; }
+.hist-mes td { background: var(--gaco-accent-soft); color: var(--gaco-accent); font-weight: 600; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; padding: 6px 12px; }
+.hist-concepte { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-fila.obert .hist-concepte { white-space: normal; overflow: visible; }
+.hist-sec { font-size: 11px; color: var(--gaco-text-secondary); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-fila.obert .hist-sec { white-space: normal; }
+.hist-ref { display: none; font-size: 11px; color: var(--gaco-text-secondary); margin-top: 2px; }
+.hist-fila.obert .hist-ref { display: block; }
+.hist-estat { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; margin-right: 6px; text-transform: uppercase; letter-spacing: 0.03em; }
+.hist-estat.pendent { background: #fbebd3; color: #8a5200; }
+.hist-estat.conciliat { background: #dcefe8; color: var(--gaco-success); }
+.hist-estat.traspas_intern { background: #e6e8f0; color: #3a4468; }
+.hist-estat.ignorat { background: #eee; color: #777; }
+.hist-pos { color: var(--gaco-success); }
+.hist-saldo, .hist-oper { color: var(--gaco-text-secondary); }
+.hist-peu { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; padding: 12px 16px; font-size: 13px; border-top: 1px solid var(--gaco-border); background: #fdfafb; font-variant-numeric: tabular-nums; }
+.hist-mes-mes { text-align: center; padding: 12px 0; }
+@media (max-width: 640px) { .hist-oper, col.hist-oper { display: none; } }
