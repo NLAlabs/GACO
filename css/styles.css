@@ -414,3 +414,16 @@ body {
 .hist-peu { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; padding: 12px 16px; font-size: 13px; border-top: 1px solid var(--gaco-border); background: #fdfafb; font-variant-numeric: tabular-nums; }
 .hist-mes-mes { text-align: center; padding: 12px 0; }
 @media (max-width: 640px) { .hist-oper, col.hist-oper { display: none; } }
+
+/* ---------- Informes (reutilitza .hist-* de l'Historial) ---------- */
+.inf-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.inf-tabs button { padding: 7px 14px; border-radius: var(--gaco-radius); border: 1px solid var(--gaco-border); background: #fff; cursor: pointer; font-size: 13px; color: var(--gaco-text-secondary); }
+.inf-tabs button.actiu { background: var(--gaco-accent-soft); color: var(--gaco-accent); border-color: var(--gaco-accent); font-weight: 600; }
+.inf-pare { cursor: pointer; font-weight: 600; }
+.inf-pare:hover { background: #fdf7f8; }
+.inf-fill td { color: var(--gaco-text-secondary); font-size: 12px; }
+.inf-fill td:first-child { padding-left: 30px; }
+.inf-fill[hidden] { display: none; }
+.inf-total td { font-weight: 700; border-top: 2px solid var(--gaco-border); background: #fdfafb; }
+.inf-nota { font-size: 12px; color: var(--gaco-text-secondary); margin: 10px 4px 0; }
+@media (max-width: 640px) { .hist-taula { font-size: 12px; } }
