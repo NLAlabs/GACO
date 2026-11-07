@@ -208,7 +208,7 @@ async function infPendents() {
         .from('gaco_factures_emeses')
         .select('num_document, data_venciment, import_pendent, contrapart_nom, client:gaco_clients(nom)')
         .in('estat', ['emesa', 'cobrada_parcial', 'impagada'])
-        .gt('import_pendent', 0.005)
+        .or('import_pendent.gt.0.005,import_pendent.lt.-0.005') // també rectificatives (pendent negatiu)
     ),
   ]);
   const vencut = (d) => (d.data_venciment && d.data_venciment < avui ? Number(d.import_pendent) : 0);
