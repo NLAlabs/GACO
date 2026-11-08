@@ -64,7 +64,7 @@ function agrupa(files, kPare, kFill, vals) {
 
 // ---------- Informes ----------
 
-const NOTA_SALARIS = "El cost salarial és el líquid de les nòmines: la Seguretat Social és a la seva partida i la retenció d'IRPF dels 111 no hi és.";
+const NOTA_SALARIS = "El cost salarial és el líquid de les nòmines: la Seguretat Social és a la seva partida i la retenció d'IRPF (model 111) és a 'Altres tributs'.";
 
 async function dadesCostos({ any, activitat }) {
   return llegeixTot(() => {
@@ -360,7 +360,7 @@ function carregarScript(src) {
   });
 }
 const pla = (s) =>
-  String(s ?? '').replace(/[\u2212\u2012\u2013\u2014]/g, '-').replace(/[\u00a0\u202f]/g, ' ').replace(/[▸▾]/g, '');
+  String(s ?? '').replace(/[\u2212\u2012\u2013\u2014]/g, '-').replace(/[\u00a0\u202f]/g, ' ').replace(/[▸▾]/g, '').replace(/→/g, '>');
 
 async function exportarPdf() {
   if (!actual) return;
