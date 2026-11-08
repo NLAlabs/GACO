@@ -669,13 +669,13 @@ function htmlSeccioD(f) {
       <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:8px;">
         <div>
           <p style="font-size:12px; color:var(--gaco-text-secondary); margin:0 0 4px;">PDF de la factura</p>
-          ${f?.fitxer_pdf_url ? `<p style="font-size:13px; margin:0 0 4px;">Ja n'hi ha un pujat — pujar-ne un altre el substitueix.</p>` : ''}
+          ${f?.fitxer_pdf_url ? `<p style="font-size:13px; margin:0 0 4px;"><button type="button" data-obrir-fitxer="${f.fitxer_pdf_url}">Obrir el PDF pujat</button> · pujar-ne un altre el substitueix.</p>` : ''}
           <input type="file" id="doc-fitxer-pdf" accept="application/pdf" />
           <button type="button" id="doc-pujar-pdf" style="margin-left:6px;">Pujar</button>
         </div>
         <div>
           <p style="font-size:12px; color:var(--gaco-text-secondary); margin:0 0 4px;">XML (factura electrònica B2B)</p>
-          ${f?.fitxer_xml_url ? `<p style="font-size:13px; margin:0 0 4px;">Ja n'hi ha un pujat — pujar-ne un altre el substitueix.</p>` : ''}
+          ${f?.fitxer_xml_url ? `<p style="font-size:13px; margin:0 0 4px;"><button type="button" data-obrir-fitxer="${f.fitxer_xml_url}">Obrir el XML pujat</button> · pujar-ne un altre el substitueix.</p>` : ''}
           <input type="file" id="doc-fitxer-xml" accept="text/xml,application/xml" />
           <button type="button" id="doc-pujar-xml" style="margin-left:6px;">Pujar</button>
         </div>
@@ -724,6 +724,7 @@ function vincularModalFactura(body, f) {
 
   body.querySelector('#doc-pujar-pdf').addEventListener('click', () => pujarFitxer(body, f.id, 'pdf'));
   body.querySelector('#doc-pujar-xml').addEventListener('click', () => pujarFitxer(body, f.id, 'xml'));
+  body.querySelectorAll('[data-obrir-fitxer]').forEach((btn) => btn.addEventListener('click', () => obrirFitxer(btn.dataset.obrirFitxer)));
 
   body.querySelector('#cb-origen').addEventListener('change', (e) => {
     body.querySelector('#cb-bloc-confirming').style.display = e.target.value === 'confirming_client' ? 'flex' : 'none';
@@ -1010,6 +1011,18 @@ function sanititzarNomFitxer(nom) {
   return `${net || 'fitxer'}${ext}`;
 }
 
+// El bucket és privat: cal un enllaç signat de curta durada per obrir el fitxer.
+async function obrirFitxer(path) {
+  const finestra = window.open('', '_blank'); // s'obre abans de l'await perquè el navegador no la bloquegi
+  const { data, error } = await supabase.storage.from(BUCKET_ADJUNTS).createSignedUrl(path, 3600);
+  if (error || !data?.signedUrl) {
+    if (finestra) finestra.close();
+    return alert(`No s'ha pogut obrir el fitxer: ${error?.message ?? 'sense enllaç'}`);
+  }
+  if (finestra) finestra.location.href = data.signedUrl;
+  else window.location.href = data.signedUrl;
+}
+
 async function pujarFitxer(body, facturaId, tipus) {
   const inputId = tipus === 'pdf' ? '#doc-fitxer-pdf' : '#doc-fitxer-xml';
   const fileInput = body.querySelector(inputId);
@@ -1141,7 +1154,8 @@ async function recalcularCobramentsCapcalera(facturaId) {
 
   let nouEstat = capcalera?.estat;
   if (!ESTATS_NO_AUTOACTUALITZAR.includes(capcalera?.estat)) {
-    if (total > 0 && importPendent <= 0) nouEstat = 'cobrada';
+    if (total !== 0 && Math.abs(importPendent) < 0.005) nouEstat = 'cobrada'; // inclou rectificatives (total negatiu)
+    else if (total > 0 && importPendent <= 0) nouEstat = 'cobrada';
     else if (importCobrat > 0) nouEstat = 'cobrada_parcial';
     else nouEstat = 'emesa';
   }
