@@ -169,9 +169,54 @@ async function infResum(ctx) {
   };
 }
 
+const CLASSES_TRES = [
+  ['cobraments_clients', 'Cobraments de clients'],
+  ['ingressos_sense_factura', 'Ingressos sense factura (ajuts i subvencions)'],
+  ['hisenda', "Hisenda: devolucions d'impostos"],
+  ['pagaments_proveidors', 'Pagaments a proveïdors (amb factura)'],
+  ['despeses_sense_factura', 'Despeses sense factura'],
+  ['prestecs', 'Préstecs: quotes, amortitzacions i disposicions'],
+  ['socis', 'Socis i vinculats'],
+  ['treballadors', 'Treballadors: bestretes'],
+  ['balanc_altres', 'Altres moviments de balanç'],
+  ['pendent', 'Pendents de classificar'],
+  ['ignorat', 'Ignorats'],
+  ['sense_classificar', 'Sense classificar'],
+];
+
+async function infTresoreria({ any }) {
+  const dades = await llegeixTot(() => supabase.from('gaco_informe_tresoreria').select('mes, classe, import').eq('exercici', any));
+  const mov = dades.filter((d) => d.classe !== 'traspas'); // els traspassos entre comptes propis es compensen
+  const fila = (nom, arr) => {
+    const e = suma(arr.filter((x) => Number(x.import) > 0), (x) => x.import);
+    const sd = suma(arr.filter((x) => Number(x.import) < 0), (x) => x.import);
+    return [nom, fImport(e), fImport(sd), fImport(r2(e + sd))];
+  };
+  const files = [];
+  for (const [clau, nom] of CLASSES_TRES) {
+    const arr = mov.filter((d) => d.classe === clau);
+    if (!arr.length) continue;
+    const mesos = [...new Set(arr.map((d) => String(d.mes).slice(0, 7)))].sort();
+    files.push({
+      cel: fila(nom, arr),
+      fills: mesos.map((m) => ({ cel: fila(cap(MESOS[Number(m.slice(5, 7)) - 1]), arr.filter((d) => String(d.mes).slice(0, 7) === m)) })),
+    });
+  }
+  files.push({ cel: fila('Variació neta de tresoreria', mov), total: true });
+  return {
+    titol: 'Tresoreria: moviments reals del banc',
+    columnes: ['Concepte', 'Entrades', 'Sortides', 'Net'],
+    files,
+    notes: [
+      "Fluxos reals dels comptes, per data valor. Els traspassos entre comptes propis no hi són, perquè es compensen.",
+      "No és el resultat: una devolució d'IVA, una disposició de préstec o una bestreta entren a la tresoreria però no als ingressos ni als costos. Clica una fila per veure-la per mesos.",
+    ],
+  };
+}
+
 async function infIva({ any }) {
   const d = await llegeixTot(() => supabase.from('gaco_informe_iva').select('trimestre, tipus, iva_pct, base, iva').eq('exercici', any));
-  const etiq = (tipus, pct) => `${cap(tipus)} ${pct === null || pct === undefined ? '(suplits, sense IVA)' : Number(pct).toLocaleString('ca-ES') + ' %'}`;
+  const etiq = (tipus, pct) => `${cap(tipus)} ${pct === null || pct === undefined ? (tipus === 'suportat' ? '(suplits, sense IVA)' : '(sense IVA calculable)') : Number(pct).toLocaleString('ca-ES') + ' %'}`;
   const files = [];
   const T = { sb: 0, si: 0, rb: 0, ri: 0 };
   for (let t = 1; t <= 4; t++) {
@@ -241,6 +286,7 @@ const TABS = [
   ['costos', 'Costos', infCostos, true],
   ['costos_mes', 'Costos per mes', infCostosMes, true],
   ['ingressos', 'Ingressos', infIngressos, false],
+  ['tresoreria', 'Tresoreria', infTresoreria, false],
   ['iva', 'IVA', infIva, false],
   ['pendents', 'Pendents', infPendents, false],
 ];
