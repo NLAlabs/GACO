@@ -83,6 +83,7 @@ const filtre = {
   importFins: null,
   estats: [],
   tipus: [],
+  senseDocument: false,
 };
 
 export async function render() {
@@ -137,6 +138,9 @@ export async function render() {
               <input type="checkbox" class="chk-tipus" value="${t}" /> ${t}
             </label>`).join('')}
         </div>
+        <label style="font-size:12px; display:flex; align-items:center; gap:3px;">
+          <input type="checkbox" id="f-sense-document" /> ⚠ Sense document propi
+        </label>
         <button type="button" id="btn-aplicar-filtres">Aplicar</button>
         <button type="button" id="btn-netejar-filtres">Netejar</button>
       </div>
@@ -204,6 +208,7 @@ function llegirFiltresDelFormulari() {
   filtre.importFins = document.getElementById('f-import-fins').value ? Number(document.getElementById('f-import-fins').value) : null;
   filtre.estats = [...document.querySelectorAll('.chk-estat:checked')].map((c) => c.value);
   filtre.tipus = [...document.querySelectorAll('.chk-tipus:checked')].map((c) => c.value);
+  filtre.senseDocument = document.getElementById('f-sense-document').checked;
 }
 
 function restaurarFiltresAlFormulari() {
@@ -221,6 +226,7 @@ function restaurarFiltresAlFormulari() {
   if (filtre.importFins != null) document.getElementById('f-import-fins').value = filtre.importFins;
   document.querySelectorAll('.chk-estat').forEach((c) => (c.checked = filtre.estats.includes(c.value)));
   document.querySelectorAll('.chk-tipus').forEach((c) => (c.checked = filtre.tipus.includes(c.value)));
+  document.getElementById('f-sense-document').checked = filtre.senseDocument;
 }
 
 function netejarFiltres() {
@@ -236,6 +242,7 @@ function netejarFiltres() {
   filtre.importFins = null;
   filtre.estats = [];
   filtre.tipus = [];
+  filtre.senseDocument = false;
 }
 
 async function carregarLlista() {
@@ -277,7 +284,25 @@ async function carregarLlista() {
   }
 
   resultatActual = data ?? [];
+  await marcarSenseDocument(resultatActual);
+  if (filtre.senseDocument) resultatActual = resultatActual.filter((f) => f._senseDoc);
   pintarLlista(resultatActual);
+}
+
+// Marca amb _senseDoc les factures (no les despeses) que no tenen cap adjunt de tipus 'propia'.
+// Una consulta per lots de 100 ids, no una per factura.
+async function marcarSenseDocument(llista) {
+  const ids = llista.filter((f) => f.tipus_factura === 'factura').map((f) => f.id);
+  const amb = new Set();
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data } = await supabase
+      .from('gaco_adjunts_factures_rebudes')
+      .select('factura_id')
+      .eq('tipus', 'propia')
+      .in('factura_id', ids.slice(i, i + 100));
+    for (const a of data ?? []) amb.add(a.factura_id);
+  }
+  for (const f of llista) f._senseDoc = f.tipus_factura === 'factura' && !amb.has(f.id);
 }
 
 function pintarLlista(llista) {
@@ -294,7 +319,7 @@ function pintarLlista(llista) {
       (f) => `
     <div style="border-top:0.5px solid var(--gaco-border); padding:10px 0; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
       <div>
-        <p style="margin:0; font-weight:500;">${f.proveidor?.nom ?? f.contrapart_nom ?? '—'}</p>
+        <p style="margin:0; font-weight:500;">${f.proveidor?.nom ?? f.contrapart_nom ?? '—'}${f._senseDoc ? ' <span style="font-size:11px; font-weight:400; color:#8a5200; background:#fbebd3; border-radius:4px; padding:1px 6px; margin-left:6px;">⚠ Sense document</span>' : ''}</p>
         <p style="margin:2px 0 0; font-size:12px; color:var(--gaco-text-secondary);">
           Data: ${formatData(f.data_factura)} · Núm.: ${f.num_factura ?? '—'} · Tipus: ${f.tipus_factura}
           · Total: ${formatImport(f.total)} · Pendent: ${formatImport(f.import_pendent)}
