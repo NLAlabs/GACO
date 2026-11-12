@@ -771,6 +771,12 @@ async function altaLinia(e, body, facturaId) {
 
   if (!categoriaId) return alert('Cal triar un concepte.');
 
+  // Elements de 300 € o menys per unitat: llibertat d'amortització, normalment es porten a despesa.
+  const preuNetUnitari = preuUnitari * (1 - descomptePct / 100);
+  if (categoria?.tipus === 'actiu' && preuNetUnitari <= 300) {
+    if (!confirm(`El preu unitari d'aquesta línia és de ${formatImport(preuNetUnitari)} (300 € o menys). Normalment aquests elements van com a despesa (llibertat d'amortització), no com a actiu.\n\nAfegir-la igualment com a actiu?`)) return;
+  }
+
   const novaLinia = {
     factura_id: facturaId,
     categoria_id: categoriaId,
