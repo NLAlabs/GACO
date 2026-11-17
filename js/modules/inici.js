@@ -63,6 +63,11 @@ async function llegeixVista(nom) {
   return data ?? [];
 }
 
+async function carregarFons() {
+  const m = await import('./financament/fons-adversitat.js');
+  return m.saldoViu ? await m.saldoViu() : null;
+}
+
 async function carregarTreballadors() {
   const m = await import('./financament/treballadors.js');
   return m.saldoTotal ? await m.saldoTotal() : null;
@@ -234,6 +239,17 @@ function htmlTreballadors(saldo) {
   </div>`;
 }
 
+function htmlFons(fons) {
+  if (!fons || fons.viu <= 0) return '';
+  return `<div class="card">
+    <p class="inici-etiq">Fons d'adversitat viu</p>
+    <p class="inici-gran">${fImport(fons.viu)}</p>
+    <p class="inici-sub">retingut per la cooperativa, fora de balanç</p>
+    ${fons.perCampanya.map(([c, v]) => `<div class="inici-fila"><span>Campanya ${esc(c)} <span class="inici-sub">· retorn previst ${Number(c) + 5}</span></span><strong>${fImport(v)}</strong></div>`).join('')}
+    <p><a href="#/financament/fons">Veure el detall →</a></p>
+  </div>`;
+}
+
 // ---------- Render ----------
 
 export async function render() {
@@ -241,21 +257,23 @@ export async function render() {
   contenidor.innerHTML = '<p>Carregant...</p>';
   const avui = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD en hora local
 
-  const [caixa, events, pend, ops, treb] = await Promise.all([
+  const [caixa, events, pend, ops, treb, fons] = await Promise.all([
     carregarCaixa().catch((e) => (console.error('caixa', e), null)),
     carregarEvents(avui).catch((e) => (console.error('events', e), null)),
     llegeixVista('gaco_pendents_pagament').catch((e) => (console.error('pendents', e), null)),
     llegeixVista('gaco_inici_operacions').catch((e) => (console.error('operacions', e), null)),
     carregarTreballadors().catch((e) => (console.warn('treballadors', e), null)),
+    carregarFons().catch((e) => (console.warn('fons', e), null)),
   ]);
 
   const liquid = r2((caixa ?? []).filter((c) => c.tipus !== 'credit' && c.saldo !== null).reduce((s, c) => s + c.saldo, 0));
   const revisar = htmlRevisar(pend);
   const persones = htmlTreballadors(treb);
+  const fonsHtml = htmlFons(fons);
 
   contenidor.innerHTML = `
     <div class="inici-grid">${htmlCaixa(caixa)}${htmlOperacions(ops, pend)}</div>
     ${htmlTresoreria(events, avui, liquid)}
-    <div class="inici-grid">${htmlPendent(pend, avui)}${revisar}${persones}</div>
+    <div class="inici-grid">${htmlPendent(pend, avui)}${revisar}${persones}${fonsHtml}</div>
   `;
 }
