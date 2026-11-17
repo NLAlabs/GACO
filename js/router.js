@@ -38,6 +38,7 @@ const SECCIONS = {
       socis: { label: 'Compte corrent socis', modul: './modules/financament/socis.js' },
       treballadors: { label: 'Compte treballadors', modul: './modules/financament/treballadors.js' },
       immobilitzat: { label: 'Immobilitzat', modul: './modules/financament/immobilitzat.js' },
+      fons: { label: 'Fons d\'adversitat', modul: './modules/financament/fons-adversitat.js' },
     },
     defaultSubruta: 'prestecs',
   },
