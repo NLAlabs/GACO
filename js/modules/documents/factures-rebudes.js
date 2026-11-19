@@ -870,24 +870,37 @@ function sortirEdicioLinia(body) {
 // -----------------------------------------------------------------------
 
 async function recalcularCapcalera(facturaId, linies) {
-  let baseImposable = 0;
-  let iva = 0;
-  let suplits = 0;
+  let centsBase = 0;
+  let centsSuplits = 0;
+  const centsPerIva = new Map();
 
   for (const l of linies) {
+    const cents = Math.round((Number(l.total_linia) || 0) * 100);
     if (l.categoria?.tipus === 'suplits') {
-      suplits += Number(l.total_linia) || 0;
+      centsSuplits += cents;
     } else {
-      baseImposable += Number(l.total_linia) || 0;
-      iva += Number(l.iva) || 0;
+      centsBase += cents;
+      const pct = Number(l.iva_pct) || 0;
+      centsPerIva.set(pct, (centsPerIva.get(pct) ?? 0) + cents);
     }
   }
 
+  // IVA com la factura de paper: una sola vegada per tipus, sobre la base total del tipus
+  let centsIva = 0;
+  for (const [pct, cents] of centsPerIva) centsIva += Math.round((cents * pct) / 100);
+
   const { data: capcalera } = await supabase.from('gaco_factures_rebudes').select('irpf, import_pagat').eq('id', facturaId).single();
-  const irpf = Number(capcalera?.irpf) || 0;
-  const total = baseImposable + iva - irpf + suplits;
-  const importPagat = Number(capcalera?.import_pagat) || 0;
-  const importPendent = total - importPagat;
+  const centsIrpf = Math.round((Number(capcalera?.irpf) || 0) * 100);
+  const centsPagat = Math.round((Number(capcalera?.import_pagat) || 0) * 100);
+  const centsTotal = centsBase + centsIva - centsIrpf + centsSuplits;
+
+  const baseImposable = centsBase / 100;
+  const iva = centsIva / 100;
+  const suplits = centsSuplits / 100;
+  const irpf = centsIrpf / 100;
+  const total = centsTotal / 100;
+  const importPendent = (centsTotal - centsPagat) / 100;
+  const importPagat = centsPagat / 100;
 
   const totalsEl = document.getElementById('totals-linies');
   if (totalsEl) {
