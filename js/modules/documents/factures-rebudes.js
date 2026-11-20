@@ -885,11 +885,18 @@ async function recalcularCapcalera(facturaId, linies) {
     }
   }
 
-  // IVA com la factura de paper: una sola vegada per tipus, sobre la base total del tipus
+  const { data: capcalera } = await supabase
+    .from('gaco_factures_rebudes')
+    .select('irpf, import_pagat, iva_manual')
+    .eq('id', facturaId)
+    .single();
+
+  // IVA com la factura de paper: una sola vegada per tipus, sobre la base total del tipus.
+  // Si la factura té iva_manual (proveïdors que arrodoneixen per tiquet), mana aquest valor.
   let centsIva = 0;
   for (const [pct, cents] of centsPerIva) centsIva += Math.round((cents * pct) / 100);
+  if (capcalera?.iva_manual != null) centsIva = Math.round(Number(capcalera.iva_manual) * 100);
 
-  const { data: capcalera } = await supabase.from('gaco_factures_rebudes').select('irpf, import_pagat').eq('id', facturaId).single();
   const centsIrpf = Math.round((Number(capcalera?.irpf) || 0) * 100);
   const centsPagat = Math.round((Number(capcalera?.import_pagat) || 0) * 100);
   const centsTotal = centsBase + centsIva - centsIrpf + centsSuplits;
@@ -899,8 +906,8 @@ async function recalcularCapcalera(facturaId, linies) {
   const suplits = centsSuplits / 100;
   const irpf = centsIrpf / 100;
   const total = centsTotal / 100;
-  const importPendent = (centsTotal - centsPagat) / 100;
   const importPagat = centsPagat / 100;
+  const importPendent = (centsTotal - centsPagat) / 100;
 
   const totalsEl = document.getElementById('totals-linies');
   if (totalsEl) {
